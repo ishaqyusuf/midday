@@ -31,6 +31,9 @@ export function SelectFile() {
       processingRef.current = fileKey;
       setIsLoading(true);
       setError(null);
+      // Clear old preview data early so remapping only uses the latest file.
+      setFileColumns(null);
+      setFirstRows(null);
 
       readLines(fileToProcess, 4)
         .then((lines) => {
@@ -48,7 +51,7 @@ export function SelectFile() {
             return;
           }
 
-          if (!meta || !meta.fields || meta.fields.length <= 1) {
+          if (!meta?.fields || meta.fields.length <= 1) {
             setError("Failed to retrieve CSV column data.");
             setFileColumns(null);
             setFirstRows(null);

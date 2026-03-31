@@ -1,86 +1,27 @@
 import { createLoggerWithContext } from "@midday/logger";
-import { parseISO } from "date-fns";
-import type { Database } from "../client";
+import type { Database, DatabaseOrTransaction } from "../client";
 import {
   inbox,
   inboxAccounts,
   inboxBlocklist,
-  inboxEmbeddings,
   transactionAttachments,
-  transactionEmbeddings,
   transactionMatchSuggestions,
   transactions,
 } from "../schema";
 
 const logger = createLoggerWithContext("inbox");
 
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  inArray,
-  lt,
-  ne,
-  notInArray,
-  or,
-  sql,
-} from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm/sql/sql";
 import { separateBlocklistEntries } from "../utils/blocklist";
 import { buildSearchQuery } from "../utils/search-query";
-
-// Scoring functions for suggestion ranking
-function calculateAmountScore(
-  item1: { amount: number | null },
-  item2: { amount: number | null },
-): number {
-  const amount1 = item1.amount;
-  const amount2 = item2.amount;
-
-  if (amount1 === null || amount2 === null) return 0.0;
-
-  const abs1 = Math.abs(amount1);
-  const abs2 = Math.abs(amount2);
-
-  if (abs1 === abs2) return 1.0;
-
-  const diff = Math.abs(abs1 - abs2);
-  const max = Math.max(abs1, abs2);
-  const percentDiff = diff / max;
-
-  if (percentDiff <= 0.05) return 0.9;
-  if (percentDiff <= 0.15) return 0.7;
-  return 0.3;
-}
-
-function calculateCurrencyScore(
-  currency1?: string,
-  currency2?: string,
-): number {
-  if (!currency1 || !currency2) return 0.5;
-  if (currency1 === currency2) return 1.0;
-  return 0.3;
-}
-
-function calculateDateScore(
-  inboxDate: string,
-  transactionDate: string,
-): number {
-  const inboxDateObj = parseISO(inboxDate);
-  const transactionDateObj = parseISO(transactionDate);
-  const diffTime = Math.abs(
-    transactionDateObj.getTime() - inboxDateObj.getTime(),
-  );
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-  if (diffDays === 0) return 1.0;
-  if (diffDays <= 1) return 0.9;
-  if (diffDays <= 3) return 0.8;
-  if (diffDays <= 7) return 0.7;
-  if (diffDays <= 14) return 0.6;
-  return 0.5;
-}
+import {
+  calculateAmountScore as calculateUnifiedAmountScore,
+  calculateCurrencyScore as calculateUnifiedCurrencyScore,
+  calculateDateScore as calculateUnifiedDateScore,
+  calculateNameScore as calculateUnifiedNameScore,
+  scoreMatch,
+} from "../utils/transaction-matching";
 
 export type GetInboxParams = {
   teamId: string;
@@ -774,14 +715,7 @@ export async function getInboxSearch(
     // PRIORITY 1: User is searching with query
     if (q && q.trim().length > 0) {
       const searchTerm = q.trim();
-      const searchQuery = buildSearchQuery(searchTerm); // Use FTS format
-
-      logger.info("SEARCH DEBUG:", {
-        searchTerm,
-        searchQuery,
-        teamId,
-        limit,
-      });
+      const searchQuery = buildSearchQuery(searchTerm);
 
       // Check if search term is a number (for amount searching)
       const numericSearch = Number.parseFloat(
@@ -792,7 +726,6 @@ export async function getInboxSearch(
         !Number.isNaN(numericSearch) && Number.isFinite(numericSearch);
 
       if (isNumericSearch) {
-        // Search by amount (exact match or close match within 10%)
         const tolerance = Math.max(1, Math.abs(numericSearch) * 0.1);
         whereConditions.push(
           sql`(
@@ -804,7 +737,6 @@ export async function getInboxSearch(
           )`,
         );
       } else {
-        // Text-only search using both FTS and ILIKE for better special character support
         whereConditions.push(
           sql`(
             to_tsquery('english', ${searchQuery}) @@ ${inbox.fts}
@@ -815,7 +747,43 @@ export async function getInboxSearch(
         );
       }
 
-      // For search, return results ordered by date (most recent first)
+      // Fetch transaction context for scoring when available
+      let txContext: {
+        name: string;
+        amount: number | null;
+        currency: string | null;
+        baseAmount: number | null;
+        baseCurrency: string | null;
+        date: string;
+        merchantName: string | null;
+        counterpartyName: string | null;
+      } | null = null;
+
+      if (transactionId) {
+        const [txData] = await db
+          .select({
+            name: transactions.name,
+            amount: transactions.amount,
+            currency: transactions.currency,
+            baseAmount: transactions.baseAmount,
+            baseCurrency: transactions.baseCurrency,
+            date: transactions.date,
+            merchantName: transactions.merchantName,
+            counterpartyName: transactions.counterpartyName,
+          })
+          .from(transactions)
+          .where(
+            and(
+              eq(transactions.id, transactionId),
+              eq(transactions.teamId, teamId),
+            ),
+          )
+          .limit(1);
+        txContext = txData ?? null;
+      }
+
+      const fetchLimit = txContext ? Math.max(limit * 3, 30) : limit;
+
       const searchResults = await db
         .select({
           id: inbox.id,
@@ -836,24 +804,65 @@ export async function getInboxSearch(
           taxAmount: inbox.taxAmount,
           taxRate: inbox.taxRate,
           taxType: inbox.taxType,
+          type: inbox.type,
         })
         .from(inbox)
         .where(and(...whereConditions))
-        .orderBy(desc(inbox.date), desc(inbox.createdAt)) // Most recent first
-        .limit(limit);
+        .orderBy(desc(inbox.date), desc(inbox.createdAt))
+        .limit(fetchLimit);
 
-      logger.info("SEARCH RESULTS:", {
-        searchTerm,
-        resultsCount: searchResults.length,
-        results: searchResults.slice(0, 3).map((r) => ({
-          id: r.id,
-          displayName: r.displayName,
-          amount: r.amount,
-          currency: r.currency,
-        })),
-      });
+      if (!txContext) {
+        return searchResults.slice(0, limit);
+      }
 
-      return searchResults;
+      // Score and re-rank using transaction context
+      return searchResults
+        .map((candidate) => {
+          const nameScore = calculateUnifiedNameScore(
+            candidate.displayName,
+            txContext.name,
+            txContext.merchantName || txContext.counterpartyName,
+          );
+          const amountScore = calculateUnifiedAmountScore(candidate, txContext);
+          const currencyScore = calculateUnifiedCurrencyScore(
+            candidate.currency || undefined,
+            txContext.currency || undefined,
+            candidate.baseCurrency || undefined,
+            txContext.baseCurrency || undefined,
+          );
+          const dateScore = candidate.date
+            ? calculateUnifiedDateScore(
+                candidate.date,
+                txContext.date,
+                candidate.type,
+              )
+            : 0;
+          const isExactAmount =
+            candidate.amount !== null &&
+            Math.abs(
+              Math.abs(candidate.amount || 0) - Math.abs(txContext.amount || 0),
+            ) < 0.01;
+          const isSameCurrency = candidate.currency === txContext.currency;
+          const confidence = scoreMatch({
+            nameScore,
+            amountScore,
+            dateScore,
+            currencyScore,
+            isSameCurrency,
+            isExactAmount,
+          });
+
+          return {
+            ...candidate,
+            nameScore,
+            amountScore,
+            currencyScore,
+            dateScore,
+            confidenceScore: confidence,
+          };
+        })
+        .sort((a, b) => b.confidenceScore - a.confidenceScore)
+        .slice(0, limit);
     }
 
     // PRIORITY 2: AI suggestions for transaction
@@ -868,6 +877,7 @@ export async function getInboxSearch(
           baseAmount: transactions.baseAmount,
           baseCurrency: transactions.baseCurrency,
           date: transactions.date,
+          merchantName: transactions.merchantName,
           counterpartyName: transactions.counterpartyName,
           description: transactions.description,
         })
@@ -902,131 +912,117 @@ export async function getInboxSearch(
           return [];
         }
 
-        // Use the same successful approach as batch-process-matching
-        // Get candidates first, then score them with the same logic that works
-        const candidates = await db
-          .select({
-            id: inbox.id,
-            createdAt: inbox.createdAt,
-            fileName: inbox.fileName,
-            amount: inbox.amount,
-            currency: inbox.currency,
-            filePath: inbox.filePath,
-            contentType: inbox.contentType,
-            date: inbox.date,
-            displayName: inbox.displayName,
-            size: inbox.size,
-            description: inbox.description,
-            baseAmount: inbox.baseAmount,
-            baseCurrency: inbox.baseCurrency,
-            status: inbox.status,
-            website: inbox.website,
-            taxAmount: inbox.taxAmount,
-            taxRate: inbox.taxRate,
-            taxType: inbox.taxType,
-            embeddingScore:
-              sql<number>`(${transactionEmbeddings.embedding} <-> ${inboxEmbeddings.embedding})`.as(
-                "embedding_score",
+        const unifiedTransactionAmount = Math.abs(transaction.amount || 0);
+        const unifiedTransactionBaseAmount = Math.abs(
+          transaction.baseAmount || 0,
+        );
+        const unifiedCandidates = await db.transaction(async (tx) => {
+          await tx.execute(
+            sql`SET LOCAL pg_trgm.word_similarity_threshold = 0.3`,
+          );
+          return tx
+            .select({
+              id: inbox.id,
+              createdAt: inbox.createdAt,
+              fileName: inbox.fileName,
+              amount: inbox.amount,
+              currency: inbox.currency,
+              filePath: inbox.filePath,
+              contentType: inbox.contentType,
+              date: inbox.date,
+              displayName: inbox.displayName,
+              size: inbox.size,
+              description: inbox.description,
+              baseAmount: inbox.baseAmount,
+              baseCurrency: inbox.baseCurrency,
+              status: inbox.status,
+              type: inbox.type,
+              website: inbox.website,
+              taxAmount: inbox.taxAmount,
+              taxRate: inbox.taxRate,
+              taxType: inbox.taxType,
+            })
+            .from(inbox)
+            .where(
+              and(
+                ...whereConditions,
+                sql`${inbox.date} IS NOT NULL`,
+                sql`${inbox.date} BETWEEN (${sql.param(transaction.date)}::date - INTERVAL '123 days') 
+                    AND (${sql.param(transaction.date)}::date + INTERVAL '30 days')`,
+                or(
+                  and(
+                    eq(inbox.currency, transaction.currency || ""),
+                    sql`ABS(ABS(COALESCE(${inbox.amount}, 0)) - ${unifiedTransactionAmount}) < GREATEST(1, ${unifiedTransactionAmount} * 0.25)`,
+                  ),
+                  sql`(${transaction.merchantName || transaction.name} %> ${inbox.displayName})`,
+                  and(
+                    eq(inbox.baseCurrency, transaction.baseCurrency || ""),
+                    sql`${inbox.baseCurrency} IS NOT NULL`,
+                    sql`ABS(ABS(COALESCE(${inbox.baseAmount}, 0)) - ${unifiedTransactionBaseAmount}) < GREATEST(50, ${unifiedTransactionBaseAmount} * 0.15)`,
+                  ),
+                ),
               ),
-          })
-          .from(inbox)
-          .innerJoin(inboxEmbeddings, eq(inbox.id, inboxEmbeddings.inboxId))
-          .crossJoin(transactionEmbeddings)
-          .where(
-            and(
-              ...whereConditions,
-              eq(transactionEmbeddings.transactionId, transactionId),
-              // More permissive threshold for manual suggestions (80%+)
-              sql`(${transactionEmbeddings.embedding} <-> ${inboxEmbeddings.embedding}) < 0.2`,
-              // Very wide date range for manual suggestions (full year)
-              sql`${inbox.date} BETWEEN (${sql.param(transaction.date)}::date - INTERVAL '365 days') 
-                  AND (${sql.param(transaction.date)}::date + INTERVAL '90 days')`,
-            ),
-          )
-          .orderBy(
-            sql`(${transactionEmbeddings.embedding} <-> ${inboxEmbeddings.embedding})`,
-          )
-          .limit(20); // Get more candidates for better scoring
-
-        logger.info("Main candidates found:", {
-          candidateCount: candidates.length,
-          candidates: candidates.map((c) => ({
-            displayName: c.displayName,
-            amount: c.amount,
-            currency: c.currency,
-            embeddingScore: c.embeddingScore,
-            semanticSimilarity: (1 - c.embeddingScore).toFixed(3),
-          })),
+            )
+            .orderBy(
+              sql`word_similarity(${transaction.merchantName || transaction.name}, COALESCE(${inbox.displayName}, '')) DESC`,
+              sql`ABS(ABS(COALESCE(${inbox.amount}, 0)) - ${unifiedTransactionAmount}) / GREATEST(1.0, ${unifiedTransactionAmount})`,
+              sql`ABS(${inbox.date} - ${sql.param(transaction.date)}::date)`,
+            )
+            .limit(Math.max(limit * 3, 30));
         });
 
-        if (candidates.length > 0) {
-          // Score candidates using the same logic as successful batch-process-matching
-          const scoredCandidates = candidates.map((candidate) => {
-            const embeddingScore = Math.max(0, 1 - candidate.embeddingScore);
-            const amountScore = calculateAmountScore(candidate, transaction);
-            const currencyScore = calculateCurrencyScore(
+        const unifiedScored = unifiedCandidates
+          .map((candidate) => {
+            const nameScore = calculateUnifiedNameScore(
+              candidate.displayName,
+              transaction.name,
+              transaction.merchantName || transaction.counterpartyName,
+            );
+            const amountScore = calculateUnifiedAmountScore(
+              candidate,
+              transaction,
+            );
+            const currencyScore = calculateUnifiedCurrencyScore(
               candidate.currency || undefined,
               transaction.currency || undefined,
+              candidate.baseCurrency || undefined,
+              transaction.baseCurrency || undefined,
             );
-            const dateScore = calculateDateScore(
+            const dateScore = calculateUnifiedDateScore(
               candidate.date!,
               transaction.date,
+              candidate.type,
             );
-
-            // Same confidence calculation as successful matching
-            let confidenceScore =
-              embeddingScore * 0.5 + // Same weights as successful matching
-              amountScore * 0.35 +
-              currencyScore * 0.1 +
-              dateScore * 0.05;
-
-            // Apply same currency penalty reduction for high semantic matches
-            if (
-              candidate.currency !== transaction.currency &&
-              currencyScore < 0.8
-            ) {
-              const currencyPenalty = embeddingScore >= 0.85 ? 0.92 : 0.85;
-              confidenceScore *= currencyPenalty;
-            }
+            const isExactAmount =
+              candidate.amount !== null &&
+              Math.abs(
+                Math.abs(candidate.amount || 0) -
+                  Math.abs(transaction.amount || 0),
+              ) < 0.01;
+            const isSameCurrency = candidate.currency === transaction.currency;
+            const confidence = scoreMatch({
+              nameScore,
+              amountScore,
+              dateScore,
+              currencyScore,
+              isSameCurrency,
+              isExactAmount,
+            });
 
             return {
               ...candidate,
-              confidenceScore,
-              embeddingScore,
+              nameScore,
               amountScore,
               currencyScore,
               dateScore,
+              confidenceScore: confidence,
             };
-          });
+          })
+          .filter((candidate) => candidate.confidenceScore >= 0.6)
+          .sort((a, b) => b.confidenceScore - a.confidenceScore)
+          .slice(0, limit);
 
-          // Sort by confidence score first, then by date (more recent first) for ties
-          const sortedSuggestions = scoredCandidates
-            .sort((a, b) => {
-              const confidenceDiff = b.confidenceScore - a.confidenceScore;
-              // If confidence scores are very close (within 1%), use date as tiebreaker
-              if (Math.abs(confidenceDiff) < 0.01) {
-                const dateA = new Date(a.date || 0).getTime();
-                const dateB = new Date(b.date || 0).getTime();
-                return dateB - dateA; // More recent first
-              }
-              return confidenceDiff;
-            })
-            .slice(0, limit);
-
-          logger.info("Found and scored suggestions:", {
-            suggestionCount: sortedSuggestions.length,
-            suggestions: sortedSuggestions.map((s) => ({
-              displayName: s.displayName,
-              amount: s.amount,
-              confidence: s.confidenceScore,
-            })),
-          });
-
-          return sortedSuggestions;
-        }
-
-        // No matches found
-        return [];
+        return unifiedScored;
       }
     }
 
@@ -1080,7 +1076,10 @@ export type UpdateInboxParams = {
   contentType?: string;
 };
 
-export async function updateInbox(db: Database, params: UpdateInboxParams) {
+export async function updateInbox(
+  db: DatabaseOrTransaction,
+  params: UpdateInboxParams,
+) {
   const { id, teamId, ...data } = params;
 
   // Special handling for status: "deleted" - need to clean up transaction attachments
@@ -1185,8 +1184,43 @@ export type MatchTransactionParams = {
   teamId: string;
 };
 
+export async function fetchInboxWithTransaction(
+  db: DatabaseOrTransaction,
+  inboxId: string,
+  teamId: string,
+) {
+  const [data] = await db
+    .select({
+      id: inbox.id,
+      fileName: inbox.fileName,
+      filePath: inbox.filePath,
+      displayName: inbox.displayName,
+      transactionId: inbox.transactionId,
+      amount: inbox.amount,
+      currency: inbox.currency,
+      contentType: inbox.contentType,
+      date: inbox.date,
+      status: inbox.status,
+      createdAt: inbox.createdAt,
+      website: inbox.website,
+      description: inbox.description,
+      transaction: {
+        id: transactions.id,
+        amount: transactions.amount,
+        currency: transactions.currency,
+        name: transactions.name,
+        date: transactions.date,
+      },
+    })
+    .from(inbox)
+    .leftJoin(transactions, eq(inbox.transactionId, transactions.id))
+    .where(and(eq(inbox.id, inboxId), eq(inbox.teamId, teamId)))
+    .limit(1);
+  return data ?? null;
+}
+
 export async function matchTransaction(
-  db: Database,
+  db: DatabaseOrTransaction,
   params: MatchTransactionParams,
 ) {
   const { id, transactionId, teamId } = params;
@@ -1212,8 +1246,11 @@ export async function matchTransaction(
 
   if (!result) return null;
 
-  // Check if inbox item is already matched
+  // Check if inbox item is already matched to the same transaction (idempotent)
   if (result.transactionId) {
+    if (result.transactionId === transactionId) {
+      return fetchInboxWithTransaction(db, id, teamId);
+    }
     throw new Error("Inbox item is already matched to a transaction");
   }
 
@@ -1245,36 +1282,37 @@ export async function matchTransaction(
       ),
     );
 
-  // Check if any related item is already matched
-  const alreadyMatched = relatedItems.find((item) => item.transactionId);
-  if (alreadyMatched) {
+  // Check if any related item is matched to a *different* transaction
+  const conflicting = relatedItems.find(
+    (item) => item.transactionId && item.transactionId !== transactionId,
+  );
+  if (conflicting) {
     throw new Error("A related inbox item is already matched to a transaction");
   }
 
-  // Check if the target transaction is already matched to another inbox item (not in this group)
-  const [existingMatch] = await db
-    .select({ id: inbox.id })
-    .from(inbox)
+  // Filter out siblings already matched to the same transaction — only process unmatched items
+  const unmatchedItems = relatedItems.filter((item) => !item.transactionId);
+
+  if (unmatchedItems.length === 0) {
+    return fetchInboxWithTransaction(db, id, teamId);
+  }
+
+  const [targetTransaction] = await db
+    .select({ id: transactions.id })
+    .from(transactions)
     .where(
-      and(
-        eq(inbox.transactionId, transactionId),
-        eq(inbox.teamId, teamId),
-        notInArray(
-          inbox.id,
-          relatedItems.map((item) => item.id),
-        ), // Not any of the related items
-      ),
+      and(eq(transactions.id, transactionId), eq(transactions.teamId, teamId)),
     )
     .limit(1);
 
-  if (existingMatch) {
-    throw new Error("Transaction is already matched to another inbox item");
+  if (!targetTransaction) {
+    throw new Error("Transaction not found or belongs to another team");
   }
 
-  // Insert transaction attachments for all related items
+  // Insert transaction attachments for unmatched items only
   const attachmentIds = new Map<string, string>();
 
-  for (const item of relatedItems) {
+  for (const item of unmatchedItems) {
     const [attachmentData] = await db
       .insert(transactionAttachments)
       .values({
@@ -1320,11 +1358,16 @@ export async function matchTransaction(
     await db
       .update(transactions)
       .set(taxUpdates)
-      .where(eq(transactions.id, transactionId));
+      .where(
+        and(
+          eq(transactions.id, transactionId),
+          eq(transactions.teamId, teamId),
+        ),
+      );
   }
 
-  // Update all related inbox items with attachment and transaction IDs
-  for (const item of relatedItems) {
+  // Update unmatched inbox items with attachment and transaction IDs
+  for (const item of unmatchedItems) {
     const attachmentId = attachmentIds.get(item.id);
     if (attachmentId) {
       await db
@@ -1338,36 +1381,7 @@ export async function matchTransaction(
     }
   }
 
-  // Return updated inbox with transaction data
-  const [data] = await db
-    .select({
-      id: inbox.id,
-      fileName: inbox.fileName,
-      filePath: inbox.filePath,
-      displayName: inbox.displayName,
-      transactionId: inbox.transactionId,
-      amount: inbox.amount,
-      currency: inbox.currency,
-      contentType: inbox.contentType,
-      date: inbox.date,
-      status: inbox.status,
-      createdAt: inbox.createdAt,
-      website: inbox.website,
-      description: inbox.description,
-      transaction: {
-        id: transactions.id,
-        amount: transactions.amount,
-        currency: transactions.currency,
-        name: transactions.name,
-        date: transactions.date,
-      },
-    })
-    .from(inbox)
-    .leftJoin(transactions, eq(inbox.transactionId, transactions.id))
-    .where(and(eq(inbox.id, id), eq(inbox.teamId, teamId)))
-    .limit(1);
-
-  return data;
+  return fetchInboxWithTransaction(db, id, teamId);
 }
 
 export type UnmatchTransactionParams = {
@@ -1979,44 +1993,43 @@ export type GetInboxStatsParams = {
 export async function getInboxStats(db: Database, params: GetInboxStatsParams) {
   const { teamId, from, to, currency } = params;
 
-  // Get counts for different statuses
-  const statusCounts = await db
-    .select({
-      status: inbox.status,
-      count: sql<number>`count(*)`,
-    })
-    .from(inbox)
-    .where(and(eq(inbox.teamId, teamId), ne(inbox.status, "deleted")))
-    .groupBy(inbox.status);
+  const [statusCounts, recentMatches, pendingSuggestions] = await Promise.all([
+    db
+      .select({
+        status: inbox.status,
+        count: sql<number>`count(*)`,
+      })
+      .from(inbox)
+      .where(and(eq(inbox.teamId, teamId), ne(inbox.status, "deleted")))
+      .groupBy(inbox.status),
 
-  // Get recent matches (done status items within the date range)
-  const recentMatches = await db
-    .select({
-      count: sql<number>`count(*)`,
-    })
-    .from(inbox)
-    .where(
-      and(
-        eq(inbox.teamId, teamId),
-        eq(inbox.status, "done"),
-        sql`${inbox.createdAt}::date >= ${from}::date`,
-        sql`${inbox.createdAt}::date <= ${to}::date`,
+    db
+      .select({
+        count: sql<number>`count(*)`,
+      })
+      .from(inbox)
+      .where(
+        and(
+          eq(inbox.teamId, teamId),
+          eq(inbox.status, "done"),
+          sql`${inbox.createdAt}::date >= ${from}::date`,
+          sql`${inbox.createdAt}::date <= ${to}::date`,
+        ),
       ),
-    );
 
-  // Get pending suggestions count
-  const pendingSuggestions = await db
-    .select({
-      count: sql<number>`count(*)`,
-    })
-    .from(transactionMatchSuggestions)
-    .innerJoin(inbox, eq(transactionMatchSuggestions.inboxId, inbox.id))
-    .where(
-      and(
-        eq(inbox.teamId, teamId),
-        eq(transactionMatchSuggestions.status, "pending"),
+    db
+      .select({
+        count: sql<number>`count(*)`,
+      })
+      .from(transactionMatchSuggestions)
+      .innerJoin(inbox, eq(transactionMatchSuggestions.inboxId, inbox.id))
+      .where(
+        and(
+          eq(inbox.teamId, teamId),
+          eq(transactionMatchSuggestions.status, "pending"),
+        ),
       ),
-    );
+  ]);
 
   // Process results
   const stats = {

@@ -1,5 +1,5 @@
 # Base image with Bun
-FROM oven/bun:1.3.9 AS base
+FROM oven/bun:1.3.10 AS base
 
 # Install turbo CLI globally
 FROM base AS turbo-cli
@@ -32,12 +32,11 @@ RUN bun install
 # Copy full source from worker pruned workspace
 COPY --from=builder /app/out/worker/full/ .
 
-# Build engine types and workbench
-RUN bunx turbo run build --filter=@midday/engine --only
+# Build workbench
 RUN cd packages/workbench && bun run build
 
 # Runner stage - clean image
-FROM oven/bun:1.3.9 AS runner
+FROM oven/bun:1.3.10 AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -46,12 +45,17 @@ ENV PORT=8080
 # Copy workspace from installer
 COPY --from=installer /app/node_modules ./node_modules
 COPY --from=installer /app/apps/worker ./apps/worker
-COPY --from=installer /app/apps/engine ./apps/engine
 COPY --from=installer /app/packages ./packages
 COPY --from=installer /app/package.json ./package.json
+
+# Carry the git SHA into the runtime container (stamped by CI before `railway up`)
+COPY --from=builder /app/.git-commit-sha /tmp/git-sha.txt
+COPY --from=builder /app/scripts/docker-entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 WORKDIR /app/apps/worker
 
 EXPOSE 8080
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["bun", "src/index.ts"]

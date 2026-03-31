@@ -107,6 +107,7 @@ app.openapi(
     tags: ["Webhooks"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: z.any(),
@@ -343,7 +344,7 @@ async function handleMediaMessage(
   // Check if phone number is connected
   const app = await getAppByWhatsAppNumber(db, phoneNumber);
 
-  if (!app || !app.teamId) {
+  if (!app?.teamId) {
     logger.warn("WhatsApp number not connected", { phoneNumber, messageId });
     const client = createWhatsAppClient();
     await client.sendMessage(phoneNumber, formatNotConnectedMessage());
@@ -428,7 +429,7 @@ async function handleButtonReply(
   // Get WhatsApp app to retrieve teamId
   const app = await getAppByWhatsAppNumber(db, phoneNumber);
 
-  if (!app || !app.teamId) {
+  if (!app?.teamId) {
     logger.warn("WhatsApp number not connected", { phoneNumber });
     const client = createWhatsAppClient();
     await client.sendMessage(phoneNumber, formatNotConnectedMessage());

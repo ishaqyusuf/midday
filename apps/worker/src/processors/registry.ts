@@ -7,9 +7,9 @@ const logger = createLoggerWithContext("worker:registry");
 import { accountingProcessors } from "./accounting";
 import { customerProcessors } from "./customers";
 import { documentProcessors } from "./documents";
-import { embeddingsProcessors } from "./embeddings";
 import { inboxProcessors } from "./inbox";
 import { insightsProcessors } from "./insights";
+import { institutionsProcessors } from "./institutions";
 import { invoiceProcessors } from "./invoices";
 import { notificationProcessors } from "./notifications";
 import { ratesProcessors } from "./rates";
@@ -30,11 +30,6 @@ for (const [jobName, processor] of Object.entries(inboxProcessors)) {
   processors.set(jobName, processor);
 }
 
-// Register embeddings processors (separate queue to prevent worker starvation)
-for (const [jobName, processor] of Object.entries(embeddingsProcessors)) {
-  processors.set(jobName, processor);
-}
-
 // Register transaction processors
 for (const [jobName, processor] of Object.entries(transactionProcessors)) {
   processors.set(jobName, processor);
@@ -47,6 +42,11 @@ for (const [jobName, processor] of Object.entries(documentProcessors)) {
 
 // Register rates processors
 for (const [jobName, processor] of Object.entries(ratesProcessors)) {
+  processors.set(jobName, processor);
+}
+
+// Register institutions processors
+for (const [jobName, processor] of Object.entries(institutionsProcessors)) {
   processors.set(jobName, processor);
 }
 

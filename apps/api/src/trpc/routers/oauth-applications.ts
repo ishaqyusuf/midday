@@ -12,6 +12,7 @@ import { revokeUserApplicationAccessSchema } from "@api/schemas/oauth-flow";
 import { resend } from "@api/services/resend";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
 import {
+  claimDCRApplication,
   createAuthorizationCode,
   createOAuthApplication,
   deleteOAuthApplication,
@@ -52,7 +53,7 @@ export const oauthApplicationsRouter = createTRPCRouter({
 
       // Validate client_id
       const application = await getOAuthApplicationByClientId(db, clientId);
-      if (!application || !application.active) {
+      if (!application?.active) {
         throw new Error("Invalid client_id");
       }
 
@@ -61,14 +62,16 @@ export const oauthApplicationsRouter = createTRPCRouter({
         throw new Error("Invalid redirect_uri");
       }
 
-      // Validate scopes
+      // Validate scopes — for DCR apps (empty scopes), allow any valid scope
       const requestedScopes = scope.split(" ").filter(Boolean);
-      const invalidScopes = requestedScopes.filter(
-        (s) => !application.scopes.includes(s),
-      );
+      if (application.scopes.length > 0) {
+        const invalidScopes = requestedScopes.filter(
+          (s) => !application.scopes.includes(s),
+        );
 
-      if (invalidScopes.length > 0) {
-        throw new Error(`Invalid scopes: ${invalidScopes.join(", ")}`);
+        if (invalidScopes.length > 0) {
+          throw new Error(`Invalid scopes: ${invalidScopes.join(", ")}`);
+        }
       }
 
       // Return application info for consent screen
@@ -106,17 +109,19 @@ export const oauthApplicationsRouter = createTRPCRouter({
 
       // Validate client_id first (needed for both allow and deny)
       const application = await getOAuthApplicationByClientId(db, clientId);
-      if (!application || !application.active) {
+      if (!application?.active) {
         throw new Error("Invalid client_id");
       }
 
-      // Validate scopes against application's registered scopes (prevent privilege escalation)
-      const invalidScopes = scopes.filter(
-        (scope) => !application.scopes.includes(scope),
-      );
+      // Validate scopes — for DCR apps (empty scopes), allow any valid scope
+      if (application.scopes.length > 0) {
+        const invalidScopes = scopes.filter(
+          (scope) => !application.scopes.includes(scope),
+        );
 
-      if (invalidScopes.length > 0) {
-        throw new Error(`Invalid scopes: ${invalidScopes.join(", ")}`);
+        if (invalidScopes.length > 0) {
+          throw new Error(`Invalid scopes: ${invalidScopes.join(", ")}`);
+        }
       }
 
       const redirectUrl = new URL(redirectUri);
@@ -147,6 +152,11 @@ export const oauthApplicationsRouter = createTRPCRouter({
       // Enforce PKCE for public clients
       if (application.isPublic && !codeChallenge) {
         throw new Error("PKCE is required for public clients");
+      }
+
+      // Claim unclaimed DCR app for this team before issuing any auth codes
+      if (!application.teamId) {
+        await claimDCRApplication(db, application.id, teamId, session.user.id);
       }
 
       // Create authorization code

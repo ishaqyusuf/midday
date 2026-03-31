@@ -44,12 +44,8 @@ function CodeBlock({ code }: { code: string }) {
   );
 }
 
-// Pre-computed deeplink with placeholder token
 const cursorConfig = {
   url: "https://api.midday.ai/mcp",
-  headers: {
-    Authorization: "Bearer YOUR_API_KEY",
-  },
 };
 const cursorDeepLink = `cursor://anysphere.cursor-deeplink/mcp/install?name=midday&config=${encodeURIComponent(btoa(JSON.stringify(cursorConfig)))}`;
 
@@ -58,9 +54,6 @@ const manualConfig = JSON.stringify(
     mcpServers: {
       midday: {
         url: "https://api.midday.ai/mcp",
-        headers: {
-          Authorization: "Bearer YOUR_API_KEY",
-        },
       },
     },
   },
@@ -106,8 +99,8 @@ export function MCPCursor() {
               </h2>
               <p className="font-sans text-base text-muted-foreground leading-relaxed">
                 Start a timer for a client project, log hours, and check your
-                tracked time—all without leaving Cursor. Just ask "start timer
-                for Acme Corp" or "how many hours did I work on this project?"
+                tracked time—all without leaving Cursor. No API key needed —
+                authentication is handled automatically via OAuth.
               </p>
             </div>
 
@@ -139,14 +132,12 @@ export function MCPCursor() {
             {/* Install Button */}
             <div className="space-y-4 mb-12">
               <a href={cursorDeepLink} className="inline-block">
-                {/* biome-ignore lint/performance/noImgElement: External deeplink badge images cannot use next/image */}
                 <img
                   src="https://cursor.com/deeplink/mcp-install-dark.png"
                   alt="Add Midday MCP server to Cursor"
                   height={32}
                   className="h-8 dark:hidden"
                 />
-                {/* biome-ignore lint/performance/noImgElement: External deeplink badge images cannot use next/image */}
                 <img
                   src="https://cursor.com/deeplink/mcp-install-light.png"
                   alt="Add Midday MCP server to Cursor"
@@ -155,16 +146,9 @@ export function MCPCursor() {
                 />
               </a>
               <p className="font-sans text-xs text-muted-foreground">
-                After installing, update{" "}
-                <code className="font-mono">YOUR_API_KEY</code> in{" "}
-                <code className="font-mono">~/.cursor/mcp.json</code> with your{" "}
-                <Link
-                  href="https://app.midday.ai/settings/developer"
-                  className="underline hover:text-foreground"
-                >
-                  API key
-                </Link>
-                .
+                No API key needed — authentication is handled automatically via
+                OAuth. You'll be prompted to sign in when you first use a Midday
+                tool.
               </p>
             </div>
 
@@ -193,7 +177,7 @@ export function MCPCursor() {
                     1
                   </span>
                   <span className="font-sans text-sm text-muted-foreground pt-0.5">
-                    Click "Add to Cursor" above
+                    Click "Add to Cursor" above or add the config manually
                   </span>
                 </li>
                 <li className="flex items-start gap-3">
@@ -201,13 +185,8 @@ export function MCPCursor() {
                     2
                   </span>
                   <span className="font-sans text-sm text-muted-foreground pt-0.5">
-                    Get an API key from{" "}
-                    <Link
-                      href="https://app.midday.ai/settings/developer"
-                      className="underline hover:text-foreground"
-                    >
-                      Settings → Developer
-                    </Link>
+                    When you first use a Midday tool, you'll be prompted to sign
+                    in and select a team
                   </span>
                 </li>
                 <li className="flex items-start gap-3">
@@ -215,16 +194,7 @@ export function MCPCursor() {
                     3
                   </span>
                   <span className="font-sans text-sm text-muted-foreground pt-0.5">
-                    Replace <code className="font-mono">YOUR_API_KEY</code> in{" "}
-                    <code className="font-mono">~/.cursor/mcp.json</code>
-                  </span>
-                </li>
-                <li className="flex items-start gap-3">
-                  <span className="flex-shrink-0 w-6 h-6 bg-secondary border border-border flex items-center justify-center font-mono text-xs text-muted-foreground">
-                    4
-                  </span>
-                  <span className="font-sans text-sm text-muted-foreground pt-0.5">
-                    Restart Cursor and @-mention Midday in chat
+                    @-mention Midday in chat to access your financial data
                   </span>
                 </li>
               </ol>

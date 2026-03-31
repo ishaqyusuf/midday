@@ -13,6 +13,8 @@ import {
 } from "@api/schemas/team";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
 import type { InviteTeamMembersPayload } from "@jobs/schema";
+
+import { teamCache } from "@midday/cache/team-cache";
 import {
   acceptTeamInvite,
   createTeam,
@@ -36,11 +38,8 @@ import {
   updateTeamMember,
 } from "@midday/db/queries";
 import { triggerJob } from "@midday/job-client";
-import { createLoggerWithContext } from "@midday/logger";
 import { tasks } from "@trigger.dev/sdk";
 import { TRPCError } from "@trpc/server";
-
-const logger = createLoggerWithContext("trpc:team");
 
 export const teamRouter = createTRPCRouter({
   current: protectedProcedure.query(async ({ ctx: { db, teamId } }) => {
@@ -71,43 +70,22 @@ export const teamRouter = createTRPCRouter({
   create: protectedProcedure
     .input(createTeamSchema)
     .mutation(async ({ ctx: { db, session }, input }) => {
-      const requestId = `trpc_team_create_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-      logger.info("Team creation request", {
-        requestId,
+      const teamId = await createTeam(db, {
+        ...input,
         userId: session.user.id,
-        userEmail: session.user.email,
-        teamName: input.name,
-        baseCurrency: input.baseCurrency,
-        countryCode: input.countryCode,
-        switchTeam: input.switchTeam,
-        timestamp: new Date().toISOString(),
+        email: session.user.email!,
+        companyType: input.companyType,
       });
 
-      try {
-        const teamId = await createTeam(db, {
-          ...input,
-          userId: session.user.id,
-          email: session.user.email!,
-        });
-
-        logger.info("Team creation successful", {
-          requestId,
-          teamId,
-          userId: session.user.id,
-        });
-
-        return teamId;
-      } catch (error) {
-        logger.error("Team creation failed", {
-          requestId,
-          error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined,
-          userId: session.user.id,
-          input,
-        });
-        throw error;
+      if (input.switchTeam) {
+        try {
+          await teamCache.invalidateForUser(session.user.id);
+        } catch {
+          // Non-fatal — cache will expire naturally
+        }
       }
+
+      return teamId;
     }),
 
   leave: protectedProcedure
@@ -127,18 +105,34 @@ export const teamRouter = createTRPCRouter({
         throw Error("Action not allowed");
       }
 
-      return leaveTeam(db, {
+      const result = await leaveTeam(db, {
         userId: session.user.id,
         teamId: input.teamId,
       });
+
+      try {
+        await teamCache.invalidateForUser(session.user.id, input.teamId);
+      } catch {
+        // Non-fatal — cache will expire naturally
+      }
+
+      return result;
     }),
 
   acceptInvite: protectedProcedure
     .input(acceptTeamInviteSchema)
     .mutation(async ({ ctx: { db, session }, input }) => {
+      if (!session.user.email) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Email is required to accept an invite",
+        });
+      }
+
       return acceptTeamInvite(db, {
         id: input.id,
         userId: session.user.id,
+        userEmail: session.user.email,
       });
     }),
 
@@ -196,8 +190,6 @@ export const teamRouter = createTRPCRouter({
         "teams",
       );
 
-      // Delete the team from database after cleanup job is enqueued
-      // Note: deleteTeam handles cache invalidation for all team members internally
       const data = await deleteTeam(db, {
         teamId: input.teamId,
         userId: session.user.id,
@@ -208,6 +200,16 @@ export const teamRouter = createTRPCRouter({
           code: "INTERNAL_SERVER_ERROR",
           message: "Failed to delete team",
         });
+      }
+
+      try {
+        await Promise.all([
+          ...data.memberUserIds.map((userId) =>
+            Promise.all([teamCache.invalidateForUser(userId, input.teamId)]),
+          ),
+        ]);
+      } catch {
+        // Non-fatal — team deletion succeeded, cache will expire naturally
       }
     }),
 
@@ -247,10 +249,18 @@ export const teamRouter = createTRPCRouter({
         }
       }
 
-      return deleteTeamMember(db, {
+      const result = await deleteTeamMember(db, {
         teamId: input.teamId,
         userId: input.userId,
       });
+
+      try {
+        await teamCache.invalidateForUser(input.userId, input.teamId);
+      } catch {
+        // Non-fatal — cache will expire naturally
+      }
+
+      return result;
     }),
 
   updateMember: protectedProcedure
@@ -305,6 +315,14 @@ export const teamRouter = createTRPCRouter({
   invite: protectedProcedure
     .input(inviteTeamMembersSchema)
     .mutation(async ({ ctx: { db, session, teamId, geo }, input }) => {
+      const invitedByEmail = session.user.email;
+      if (!invitedByEmail) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Email is required to invite team members",
+        });
+      }
+
       const ip = geo.ip ?? "127.0.0.1";
 
       const data = await createTeamInvites(db, {
@@ -318,14 +336,22 @@ export const teamRouter = createTRPCRouter({
       const results = data?.results ?? [];
       const skippedInvites = data?.skippedInvites ?? [];
 
-      const invites = results.map((invite) => ({
-        email: invite?.email!,
-        invitedBy: session.user.id!,
-        invitedByName: session.user.full_name!,
-        invitedByEmail: session.user.email!,
-        teamName: invite?.team?.name!,
-        inviteCode: invite?.code!,
-      }));
+      const invites: InviteTeamMembersPayload["invites"] = results.flatMap(
+        (invite) => {
+          if (!invite?.email) {
+            return [];
+          }
+
+          return [
+            {
+              email: invite.email,
+              invitedByName: session.user.full_name ?? "",
+              invitedByEmail,
+              teamName: invite.team?.name ?? "",
+            },
+          ];
+        },
+      );
 
       // Only trigger email sending if there are valid invites
       if (invites.length > 0) {

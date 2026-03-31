@@ -1,7 +1,9 @@
 "use client";
 
 import { closestCenter, DndContext } from "@dnd-kit/core";
+import { LogEvents } from "@midday/events/events";
 import { Table, TableBody, TableCell, TableRow } from "@midday/ui/table";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useSuspenseInfiniteQuery } from "@tanstack/react-query";
 import { getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { useVirtualizer, type VirtualItem } from "@tanstack/react-virtual";
@@ -27,7 +29,7 @@ import { useUserQuery } from "@/hooks/use-user";
 import { useCustomersStore } from "@/store/customers";
 import { useTRPC } from "@/trpc/client";
 import { STICKY_COLUMNS, SUMMARY_GRID_HEIGHTS } from "@/utils/table-configs";
-import type { TableSettings } from "@/utils/table-settings";
+import { getColumnIds, type TableSettings } from "@/utils/table-settings";
 import { columns } from "./columns";
 import { EmptyState, NoResults } from "./empty-states";
 import { DataTableHeader } from "./table-header";
@@ -35,12 +37,15 @@ import { DataTableHeader } from "./table-header";
 // Stable reference for non-clickable columns (avoids recreation on each render)
 const NON_CLICKABLE_COLUMNS = new Set(["actions"]);
 
+const COLUMN_IDS = getColumnIds(columns);
+
 type Props = {
   initialSettings?: Partial<TableSettings>;
 };
 
 export function DataTable({ initialSettings }: Props) {
   const trpc = useTRPC();
+  const { track } = useOpenPanel();
   const { data: user } = useUserQuery();
   const { setParams } = useCustomerParams();
   const { filter, hasFilters } = useCustomerFilterParams();
@@ -64,6 +69,7 @@ export function DataTable({ initialSettings }: Props) {
   } = useTableSettings({
     tableId: "customers",
     initialSettings,
+    columnIds: COLUMN_IDS,
   });
 
   const infiniteQueryOptions = trpc.customers.get.infiniteQueryOptions(
@@ -83,6 +89,7 @@ export function DataTable({ initialSettings }: Props) {
   const deleteCustomerMutation = useMutation(
     trpc.customers.delete.mutationOptions({
       onSuccess: () => {
+        track(LogEvents.CustomerDeleted.name);
         refetch();
       },
     }),
@@ -91,6 +98,7 @@ export function DataTable({ initialSettings }: Props) {
   const enrichCustomerMutation = useMutation(
     trpc.customers.enrich.mutationOptions({
       onSuccess: () => {
+        track(LogEvents.CustomerEnriched.name);
         refetch();
       },
     }),

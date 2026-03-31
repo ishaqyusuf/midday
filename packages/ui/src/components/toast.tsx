@@ -32,6 +32,7 @@ const toastVariants = cva(
         progress: "",
         spinner: "",
         ai: "",
+        info: "",
         destructive:
           "destructive group border-destructive bg-destructive text-destructive-foreground",
       },
@@ -119,13 +120,13 @@ type ToastProps = React.ComponentPropsWithoutRef<typeof Toast>;
 type ToastActionElement = React.ReactElement<typeof ToastAction>;
 
 export {
-  type ToastProps,
-  type ToastActionElement,
-  ToastProvider,
-  ToastViewport,
   Toast,
-  ToastTitle,
-  ToastDescription,
-  ToastClose,
   ToastAction,
+  type ToastActionElement,
+  ToastClose,
+  ToastDescription,
+  type ToastProps,
+  ToastProvider,
+  ToastTitle,
+  ToastViewport,
 };

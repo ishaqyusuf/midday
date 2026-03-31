@@ -1,5 +1,7 @@
 "use client";
 
+import { track } from "@midday/events/client";
+import { LogEvents } from "@midday/events/events";
 import Link from "next/link";
 
 export function TimeSavingsSection() {
@@ -11,8 +13,8 @@ export function TimeSavingsSection() {
             Less admin. More focus.
           </h2>
           <p className="hidden sm:block font-sans text-base text-muted-foreground leading-normal max-w-2xl mx-auto">
-            Midday removes manual financial work so you can spend time on what
-            actually matters.
+            Midday removes manual work so you can spend time on what actually
+            matters.
           </p>
         </div>
 
@@ -108,6 +110,14 @@ export function TimeSavingsSection() {
 
             <a
               href="https://app.midday.ai/"
+              onClick={() =>
+                track({
+                  event: LogEvents.CTA.name,
+                  channel: LogEvents.CTA.channel,
+                  label: "Time savings",
+                  position: "time_savings",
+                })
+              }
               className="relative overflow-hidden bg-secondary border border-border p-4 sm:p-5 md:p-5 lg:p-6 transition-all duration-200 group hidden xl:block xl:col-span-7 hover:border-muted-foreground touch-manipulation"
               style={{ WebkitTapHighlightColor: "transparent" }}
             >
@@ -131,11 +141,11 @@ export function TimeSavingsSection() {
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground transition-colors duration-200">
                     <span className="group-hover:hidden transition-opacity duration-200">
-                      Manual financial work caused by disconnected tools.
+                      Manual work caused by disconnected tools.
                     </span>
                     <span className="hidden group-hover:inline transition-opacity duration-200">
-                      Midday handles the financial busywork so you can focus on
-                      running the business.
+                      Midday handles the busywork so you can focus on running
+                      the business.
                     </span>
                   </p>
                 </div>
@@ -151,6 +161,14 @@ export function TimeSavingsSection() {
           <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:hidden">
             <a
               href="https://app.midday.ai/"
+              onClick={() =>
+                track({
+                  event: LogEvents.CTA.name,
+                  channel: LogEvents.CTA.channel,
+                  label: "Time savings",
+                  position: "time_savings",
+                })
+              }
               className="relative overflow-hidden bg-secondary border border-border p-4 sm:p-5 md:p-5 lg:p-6 transition-all duration-200 hover:border-muted-foreground touch-manipulation"
               style={{ WebkitTapHighlightColor: "transparent" }}
             >
@@ -163,7 +181,7 @@ export function TimeSavingsSection() {
                     What disappears over time
                   </p>
                   <p className="mt-1 text-sm text-muted-foreground transition-colors duration-200">
-                    Manual financial work caused by disconnected tools.
+                    Manual work caused by disconnected tools.
                   </p>
                 </div>
                 <div className="flex flex-col items-end">

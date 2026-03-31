@@ -19,8 +19,12 @@ export function SearchModal() {
         className="overflow-hidden p-0 max-w-full w-full md:max-w-[740px] h-[535px] m-0 select-text bg-transparent border-none"
         hideClose
       >
-        <Search />
-        <SearchFooter />
+        {isOpen && (
+          <>
+            <Search />
+            <SearchFooter />
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );

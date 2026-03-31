@@ -16,6 +16,7 @@ import { Icons } from "@midday/ui/icons";
 import { Spinner } from "@midday/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@midday/ui/tooltip";
 import { formatDate } from "@midday/utils/format";
+import { calculateBaseTaxAmount } from "@midday/utils/tax";
 import type { ColumnDef } from "@tanstack/react-table";
 import { memo, useCallback } from "react";
 import { FormatAmount } from "@/components/format-amount";
@@ -55,15 +56,8 @@ const SelectCell = memo(
 SelectCell.displayName = "SelectCell";
 
 const DateCell = memo(
-  ({
-    date,
-    format,
-    noSort,
-  }: {
-    date: string;
-    format?: string | null;
-    noSort?: boolean;
-  }) => formatDate(date, format, noSort),
+  ({ date, format }: { date: string; format?: string | null }) =>
+    formatDate(date, format),
 );
 
 DateCell.displayName = "DateCell";
@@ -168,6 +162,10 @@ const ActionsCell = memo(
     onEditTransaction?: (id: string) => void;
     onMoveToReview?: (id: string) => void;
   }) => {
+    const isArchived = transaction.status === "archived";
+    const isExcluded = transaction.status === "excluded";
+    const isWorkflowActive = !isArchived && !isExcluded;
+
     const handleViewDetails = useCallback(() => {
       onViewDetails?.(transaction.id);
     }, [transaction.id, onViewDetails]);
@@ -186,10 +184,6 @@ const ActionsCell = memo(
 
     const handleUpdateToCompleted = useCallback(() => {
       onUpdateTransaction?.({ id: transaction.id, status: "completed" });
-    }, [transaction.id, onUpdateTransaction]);
-
-    const handleUpdateToExcluded = useCallback(() => {
-      onUpdateTransaction?.({ id: transaction.id, status: "excluded" });
     }, [transaction.id, onUpdateTransaction]);
 
     const handleUpdateToExported = useCallback(() => {
@@ -219,46 +213,48 @@ const ActionsCell = memo(
             </DropdownMenuItem>
             {transaction.manual && (
               <DropdownMenuItem onClick={handleEditTransaction}>
-                Edit transaction
+                Edit
               </DropdownMenuItem>
             )}
             <DropdownMenuItem onClick={handleCopyUrl}>
-              Share URL
+              Copy link
             </DropdownMenuItem>
-            <DropdownMenuSeparator />
+            {(isWorkflowActive || transaction.status === "excluded") && (
+              <DropdownMenuSeparator />
+            )}
+
+            {isWorkflowActive && !transaction.isFulfilled && (
+              <DropdownMenuItem onClick={handleUpdateToCompleted}>
+                Mark ready
+              </DropdownMenuItem>
+            )}
+
+            {isWorkflowActive &&
+              transaction.isFulfilled &&
+              transaction.status === "completed" && (
+                <DropdownMenuItem onClick={handleUpdateToPosted}>
+                  Unmark ready
+                </DropdownMenuItem>
+              )}
+
+            {isWorkflowActive &&
+              !transaction.isExported &&
+              transaction.status !== "exported" && (
+                <DropdownMenuItem onClick={handleUpdateToExported}>
+                  Mark exported
+                </DropdownMenuItem>
+              )}
+
+            {isWorkflowActive &&
+              (transaction.isExported || transaction.status === "exported") && (
+                <DropdownMenuItem onClick={handleMoveToReview}>
+                  Unmark exported
+                </DropdownMenuItem>
+              )}
+
             {!transaction.manual && transaction.status === "excluded" && (
               <DropdownMenuItem onClick={handleUpdateToPosted}>
                 Include
-              </DropdownMenuItem>
-            )}
-
-            {!transaction.isFulfilled && (
-              <DropdownMenuItem onClick={handleUpdateToCompleted}>
-                Mark as completed
-              </DropdownMenuItem>
-            )}
-
-            {transaction.isFulfilled && transaction.status === "completed" && (
-              <DropdownMenuItem onClick={handleUpdateToPosted}>
-                Mark as uncompleted
-              </DropdownMenuItem>
-            )}
-
-            {!transaction.isExported && transaction.status !== "exported" && (
-              <DropdownMenuItem onClick={handleUpdateToExported}>
-                Mark as exported
-              </DropdownMenuItem>
-            )}
-
-            {(transaction.isExported || transaction.status === "exported") && (
-              <DropdownMenuItem onClick={handleMoveToReview}>
-                Move to review
-              </DropdownMenuItem>
-            )}
-
-            {!transaction.manual && transaction.status !== "excluded" && (
-              <DropdownMenuItem onClick={handleUpdateToExcluded}>
-                Exclude
               </DropdownMenuItem>
             )}
 
@@ -343,7 +339,6 @@ export const columns: ColumnDef<Transaction>[] = [
       <DateCell
         date={row.original.date}
         format={table.options.meta?.dateFormat}
-        noSort={!table.options.meta?.hasSorting}
       />
     ),
   },
@@ -401,13 +396,118 @@ export const columns: ColumnDef<Transaction>[] = [
       headerLabel: "Tax Amount",
       className: "w-[170px] min-w-[100px]",
     },
-    cell: ({ row }) => (
-      <FormatAmount
-        amount={row.original.taxAmount ?? 0}
-        currency={row.original.currency}
-        maximumFractionDigits={2}
-      />
-    ),
+    cell: ({ row }) => {
+      const { taxAmount, currency } = row.original;
+
+      if (taxAmount == null) {
+        return <span className="text-muted-foreground">-</span>;
+      }
+
+      return (
+        <FormatAmount
+          amount={taxAmount}
+          currency={currency}
+          maximumFractionDigits={2}
+        />
+      );
+    },
+  },
+  {
+    accessorKey: "baseAmount",
+    header: "Base Amount",
+    size: 170,
+    minSize: 100,
+    maxSize: 400,
+    enableResizing: true,
+    meta: {
+      skeleton: { type: "text", width: "w-20" },
+      headerLabel: "Base Amount",
+      className: "w-[170px] min-w-[100px]",
+    },
+    cell: ({ row }) => {
+      const { baseAmount, baseCurrency, currency } = row.original;
+
+      if (baseAmount == null || !baseCurrency || baseCurrency === currency) {
+        return <span className="text-muted-foreground">-</span>;
+      }
+
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className={cn("text-sm", baseAmount > 0 && "text-[#00C969]")}>
+              <FormatAmount amount={baseAmount} currency={baseCurrency} />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            className="px-3 py-1.5 text-xs max-w-[280px]"
+            side="top"
+            sideOffset={5}
+          >
+            Approximate amount converted to your base currency.
+          </TooltipContent>
+        </Tooltip>
+      );
+    },
+  },
+  {
+    accessorKey: "baseTaxAmount",
+    header: "Base Tax Amount",
+    size: 170,
+    minSize: 100,
+    maxSize: 400,
+    enableResizing: true,
+    meta: {
+      skeleton: { type: "text", width: "w-20" },
+      headerLabel: "Base Tax Amount",
+      className: "w-[170px] min-w-[100px]",
+    },
+    cell: ({ row }) => {
+      const { taxAmount, taxRate, amount, baseAmount, baseCurrency, currency } =
+        row.original;
+
+      if (
+        baseAmount == null ||
+        !baseCurrency ||
+        baseCurrency === currency ||
+        taxAmount == null
+      ) {
+        return <span className="text-muted-foreground">-</span>;
+      }
+
+      const baseTax = calculateBaseTaxAmount({
+        amount,
+        taxAmount,
+        taxRate,
+        baseAmount,
+        baseCurrency,
+        currency,
+      });
+
+      if (baseTax == null) {
+        return <span className="text-muted-foreground">-</span>;
+      }
+
+      return (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span>
+              <FormatAmount
+                amount={baseTax}
+                currency={baseCurrency}
+                maximumFractionDigits={2}
+              />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            className="px-3 py-1.5 text-xs max-w-[280px]"
+            side="top"
+            sideOffset={5}
+          >
+            Approximate tax amount converted to your base currency.
+          </TooltipContent>
+        </Tooltip>
+      );
+    },
   },
   {
     accessorKey: "category",
@@ -593,6 +693,7 @@ export const columns: ColumnDef<Transaction>[] = [
 
       return (
         <TransactionStatus
+          rawStatus={row.original.status}
           isFulfilled={
             row.original.status === "completed" || row.original.isFulfilled
           }

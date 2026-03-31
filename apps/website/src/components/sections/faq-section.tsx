@@ -11,12 +11,12 @@ const faqs: FAQItem[] = [
   {
     question: "What is Midday?",
     answer:
-      "Midday is a financial workspace for founders and small teams. It brings transactions, receipts, invoices, time tracking, and files into one connected system so you always know what's going on in your business.",
+      "Midday is a business workspace for one-person companies. It brings transactions, receipts, invoices, time tracking, and files into one connected system so you always know what's going on in your business.",
   },
   {
     question: "Who is Midday for?",
     answer:
-      "Midday is built for solo founders, freelancers, and small teams who want clarity and control over their business finances without spending time on manual admin or spreadsheets.",
+      "Midday is built for founders running their company on their own who want clarity and control over their business without spending time on manual admin or spreadsheets.",
   },
   {
     question: "Do I need financial or accounting knowledge to use Midday?",
@@ -46,7 +46,7 @@ const faqs: FAQItem[] = [
   {
     question: "Can I create invoices in Midday?",
     answer:
-      "Yes. You can create one-off, recurring, scheduled, and web invoices. Invoice activity is reflected directly in your financial overview.",
+      "Yes. You can create one-off, recurring, scheduled, and web invoices. Invoice activity is reflected directly in your overview.",
   },
   {
     question: "Does time tracking connect to invoicing?",
@@ -64,9 +64,9 @@ const faqs: FAQItem[] = [
       "Yes. Midday uses industry-standard security practices to protect your data. You control what gets connected and shared at all times.",
   },
   {
-    question: "Can I change plans later?",
+    question: "Can I switch between monthly and yearly?",
     answer:
-      "Yes. You can upgrade or downgrade your plan at any time as your business grows or your needs change.",
+      "Yes. You can switch between monthly and yearly billing at any time. Save 20% with annual billing.",
   },
   {
     question: "Is there a free trial?",

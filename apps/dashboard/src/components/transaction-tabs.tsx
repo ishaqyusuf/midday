@@ -2,13 +2,31 @@
 
 import { cn } from "@midday/ui/cn";
 import { Tabs, TabsList, TabsTrigger } from "@midday/ui/tabs";
+import { useEffect, useState } from "react";
 import { useReviewTransactions } from "@/hooks/use-review-transactions";
 import { useTransactionTab } from "@/hooks/use-transaction-tab";
 
+function ReviewCount() {
+  const { transactionIds } = useReviewTransactions();
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted || transactionIds.length === 0) {
+    return null;
+  }
+
+  return (
+    <span className="ml-1 text-xs text-[#878787]">
+      ({transactionIds.length})
+    </span>
+  );
+}
+
 export function TransactionTabs() {
   const { tab, setTab } = useTransactionTab();
-  const { transactionIds } = useReviewTransactions();
-  const reviewCount = transactionIds.length;
 
   const handleValueChange = (value: string) => {
     if (value === "all" || value === "review") {
@@ -39,11 +57,7 @@ export function TransactionTabs() {
             )}
           >
             Review
-            {reviewCount > 0 && (
-              <span className="ml-1 text-xs text-[#878787]">
-                ({reviewCount})
-              </span>
-            )}
+            <ReviewCount />
           </TabsTrigger>
         </TabsList>
       </div>

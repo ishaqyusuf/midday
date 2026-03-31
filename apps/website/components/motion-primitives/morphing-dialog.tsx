@@ -361,7 +361,6 @@ function MorphingDialogImage({
   const { uniqueId } = useMorphingDialog();
 
   return (
-    // biome-ignore lint/performance/noImgElement: Third-party dialog component
     <motion.img
       src={src}
       alt={alt}
@@ -412,12 +411,12 @@ function MorphingDialogClose({
 
 export {
   MorphingDialog,
-  MorphingDialogTrigger,
+  MorphingDialogClose,
   MorphingDialogContainer,
   MorphingDialogContent,
-  MorphingDialogClose,
-  MorphingDialogTitle,
-  MorphingDialogSubtitle,
   MorphingDialogDescription,
   MorphingDialogImage,
+  MorphingDialogSubtitle,
+  MorphingDialogTitle,
+  MorphingDialogTrigger,
 };

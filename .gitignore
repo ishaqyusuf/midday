@@ -84,3 +84,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+*.csv
+
+# Matching eval history (local progress tracking)
+.matching-eval-history.json
+
+# Toolpick embedding cache (auto-generated on first boot)
+.toolpick-cache.json

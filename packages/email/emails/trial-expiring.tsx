@@ -22,7 +22,7 @@ interface Props {
 
 export const TrialExpiringEmail = ({ fullName = "" }: Props) => {
   const firstName = fullName ? fullName.split(" ").at(0) : "";
-  const text = `${firstName ? `Hi ${firstName}, ` : ""}Just a quick reminder—your Midday trial ends in 3 days. We hope you've had a great experience so far.`;
+  const text = `${firstName ? `Hi ${firstName}, ` : ""}Your Midday trial ends tomorrow — your subscription will begin automatically.`;
   const themeClasses = getEmailThemeClasses();
   const lightStyles = getEmailInlineStyles("light");
 
@@ -42,10 +42,10 @@ export const TrialExpiringEmail = ({ fullName = "" }: Props) => {
         >
           <Logo />
           <Heading
-            className={`text-[21px] font-normal text-center p-0 my-[30px] mx-0 ${themeClasses.heading}`}
+            className={`font-serif text-[21px] font-normal text-center p-0 my-[30px] mx-0 ${themeClasses.heading}`}
             style={{ color: lightStyles.text.color }}
           >
-            Your Midday Trial is Expiring Soon
+            Your trial ends tomorrow
           </Heading>
 
           <br />
@@ -60,36 +60,45 @@ export const TrialExpiringEmail = ({ fullName = "" }: Props) => {
             className={themeClasses.text}
             style={{ color: lightStyles.text.color }}
           >
-            Just a quick reminder—your Midday trial ends in 3 days. We hope
-            you've had a great experience so far.
+            Just a heads up — your 14-day Midday trial ends tomorrow and your
+            subscription will begin automatically. Your card on file will be
+            charged for your selected plan.
           </Text>
           <Text
             className={`text-[14px] ${themeClasses.text}`}
             style={{ color: lightStyles.text.color }}
           >
-            Since you joined during our limited Pro Plan offer, your discount
-            has already been applied to your account. You still have time to
-            claim it before your trial ends.
+            Everything you've set up — bank connections, invoicing, receipt
+            matching, and financial reports — will continue working without
+            interruption.
           </Text>
           <Section className="text-center mt-[50px] mb-[50px]">
             <Button href="https://app.midday.ai/settings/billing">
-              Claim your discount
+              Manage subscription
             </Button>
           </Section>
           <Text
             className={`text-[14px] ${themeClasses.text}`}
             style={{ color: lightStyles.text.color }}
           >
-            If you're unsure or have any questions, we'd love to hear from you.
-            You can reply to this email or schedule a quick{" "}
+            If you'd like to cancel before your trial ends, you can do so from
+            your{" "}
+            <Link
+              href="https://app.midday.ai/settings/billing"
+              className={`underline ${themeClasses.link}`}
+              style={{ color: lightStyles.text.color }}
+            >
+              billing settings
+            </Link>
+            . Have questions? Reply to this email or{" "}
             <Link
               href="https://cal.com/pontus-midday/15min"
               className={`underline ${themeClasses.link}`}
               style={{ color: lightStyles.text.color }}
             >
-              call with us
+              book a quick call
             </Link>
-            . We're always here to help.
+            .
           </Text>
           <Text
             className={`text-[14px] ${themeClasses.text}`}

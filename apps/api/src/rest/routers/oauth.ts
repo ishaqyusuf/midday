@@ -1,13 +1,14 @@
 import { publicMiddleware } from "@api/rest/middleware";
 import type { Context } from "@api/rest/types";
 import {
+  dcrRequestSchema,
+  dcrResponseSchema,
   oauthApplicationInfoSchema,
   oauthAuthorizationDecisionSchema,
   oauthAuthorizationRequestSchema,
   oauthErrorResponseSchema,
-  oauthRefreshTokenRequestSchema,
   oauthRevokeTokenRequestSchema,
-  oauthTokenRequestSchema,
+  oauthTokenEndpointRequestSchema,
   oauthTokenResponseSchema,
 } from "@api/schemas/oauth-flow";
 import { resend } from "@api/services/resend";
@@ -17,7 +18,9 @@ import { validateResponse } from "@api/utils/validate-response";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import type { Database } from "@midday/db/client";
 import {
+  claimDCRApplication,
   createAuthorizationCode,
+  createDCRApplication,
   exchangeAuthorizationCode,
   getOAuthApplicationByClientId,
   getTeamsByUserId,
@@ -48,6 +51,109 @@ app.use(
     statusCode: 429,
     message: "Rate limit exceeded",
   }),
+);
+
+// Dynamic Client Registration (RFC 7591)
+app.use(
+  "/register",
+  rateLimiter({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    limit: 10, // per IP
+    keyGenerator: (c) =>
+      c.req.header("x-forwarded-for") || c.req.header("x-real-ip") || "unknown",
+    statusCode: 429,
+    message: "Registration rate limit exceeded",
+  }),
+);
+
+app.openapi(
+  createRoute({
+    method: "post",
+    path: "/register",
+    summary: "Dynamic Client Registration",
+    operationId: "postOAuthRegister",
+    description:
+      "Register an OAuth client dynamically (RFC 7591). Used by MCP clients like ChatGPT and Claude.",
+    tags: ["OAuth"],
+    request: {
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: dcrRequestSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      201: {
+        description: "Client registered successfully",
+        content: {
+          "application/json": {
+            schema: dcrResponseSchema,
+          },
+        },
+      },
+      400: {
+        description: "Invalid request",
+        content: {
+          "application/json": {
+            schema: oauthErrorResponseSchema,
+          },
+        },
+      },
+    },
+  }),
+  async (c) => {
+    const db = c.get("db") as Database;
+    const body = c.req.valid("json");
+
+    if (!body.redirect_uris || body.redirect_uris.length === 0) {
+      throw new HTTPException(400, {
+        message: "At least one redirect_uri is required",
+      });
+    }
+
+    for (const uri of body.redirect_uris) {
+      const isHttps = uri.startsWith("https://");
+      const isLocalhost = uri.startsWith("http://localhost");
+      const isNativeScheme =
+        /^[a-z][a-z0-9+.-]*:\/\//i.test(uri) && !uri.startsWith("http://");
+
+      if (!isHttps && !isLocalhost && !isNativeScheme) {
+        throw new HTTPException(400, {
+          message: `redirect_uri must use HTTPS or a native app scheme: ${uri}`,
+        });
+      }
+    }
+
+    const result = await createDCRApplication(db, {
+      clientName: body.client_name,
+      redirectUris: body.redirect_uris,
+      scope: body.scope,
+      logoUri: body.logo_uri,
+      clientUri: body.client_uri,
+      grantTypes: body.grant_types,
+      tokenEndpointAuthMethod: body.token_endpoint_auth_method,
+    });
+
+    if (!result) {
+      throw new HTTPException(500, {
+        message: "Failed to register client",
+      });
+    }
+
+    const response = {
+      client_id: result.clientId as string,
+      client_name: result.name as string,
+      redirect_uris: result.redirectUris as string[],
+      grant_types: body.grant_types || ["authorization_code", "refresh_token"],
+      token_endpoint_auth_method: body.token_endpoint_auth_method || "none",
+      response_types: body.response_types || ["code"],
+    };
+
+    return c.json(response, 201);
+  },
 );
 
 app.openapi(
@@ -88,7 +194,7 @@ app.openapi(
 
     // Validate client_id
     const application = await getOAuthApplicationByClientId(db, client_id);
-    if (!application || !application.active) {
+    if (!application?.active) {
       throw new HTTPException(400, {
         message: "Invalid client_id",
       });
@@ -108,16 +214,18 @@ app.openapi(
       });
     }
 
-    // Validate scopes
+    // Validate scopes — for DCR apps (empty scopes), allow any valid scope
     const requestedScopes = scope.split(" ").filter(Boolean);
-    const invalidScopes = requestedScopes.filter(
-      (s) => !application.scopes.includes(s),
-    );
+    if (application.scopes.length > 0) {
+      const invalidScopes = requestedScopes.filter(
+        (s) => !application.scopes.includes(s),
+      );
 
-    if (invalidScopes.length > 0) {
-      throw new HTTPException(400, {
-        message: `Invalid scopes: ${invalidScopes.join(", ")}`,
-      });
+      if (invalidScopes.length > 0) {
+        throw new HTTPException(400, {
+          message: `Invalid scopes: ${invalidScopes.join(", ")}`,
+        });
+      }
     }
 
     // Return application info for consent screen
@@ -151,6 +259,7 @@ app.openapi(
     tags: ["OAuth"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: oauthAuthorizationDecisionSchema,
@@ -218,7 +327,7 @@ app.openapi(
 
     // Validate client_id
     const application = await getOAuthApplicationByClientId(db, client_id);
-    if (!application || !application.active) {
+    if (!application?.active) {
       throw new HTTPException(400, {
         message: "Invalid client_id",
       });
@@ -251,6 +360,11 @@ app.openapi(
         redirectUrl.searchParams.set("state", state);
       }
       return c.json({ redirect_url: redirectUrl.toString() });
+    }
+
+    // Claim unclaimed DCR app for this team before issuing any auth codes
+    if (!application.teamId) {
+      await claimDCRApplication(db, application.id, teamId, session.user.id);
     }
 
     // Create authorization code
@@ -325,26 +439,8 @@ app.openapi(
     summary: "OAuth Token Exchange",
     operationId: "postOAuthToken",
     description:
-      "Exchange authorization code for access token or refresh an access token",
+      "Exchange authorization code for access token or refresh an access token. Accepts application/json or application/x-www-form-urlencoded.",
     tags: ["OAuth"],
-    request: {
-      body: {
-        content: {
-          "application/json": {
-            schema: z.union([
-              oauthTokenRequestSchema,
-              oauthRefreshTokenRequestSchema,
-            ]),
-          },
-          "application/x-www-form-urlencoded": {
-            schema: z.union([
-              oauthTokenRequestSchema,
-              oauthRefreshTokenRequestSchema,
-            ]),
-          },
-        },
-      },
-    },
     responses: {
       200: {
         description: "Token exchange successful",
@@ -372,23 +468,24 @@ app.openapi(
     if (contentType.includes("application/x-www-form-urlencoded")) {
       body = await c.req.parseBody();
     } else {
-      body = c.req.valid("json");
+      body = await c.req.json();
     }
 
-    const {
-      grant_type,
-      code,
-      redirect_uri,
-      client_id,
-      client_secret,
-      code_verifier,
-      refresh_token,
-      scope,
-    } = body;
+    const parsed = oauthTokenEndpointRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new HTTPException(400, {
+        message: parsed.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; "),
+      });
+    }
+
+    const data = parsed.data;
+    const { client_id, client_secret } = data;
 
     // Validate client credentials
     const application = await getOAuthApplicationByClientId(db, client_id);
-    if (!application || !application.active) {
+    if (!application?.active) {
       throw new HTTPException(400, {
         message: "Invalid client credentials",
       });
@@ -403,20 +500,18 @@ app.openapi(
       }
     } else {
       // For confidential clients, validate client_secret
-      if (!validateClientCredentials(application, client_secret)) {
+      if (
+        !client_secret ||
+        !validateClientCredentials(application, client_secret)
+      ) {
         throw new HTTPException(400, {
           message: "Invalid client credentials",
         });
       }
     }
 
-    if (grant_type === "authorization_code") {
-      if (!code || !redirect_uri) {
-        throw new HTTPException(400, {
-          message:
-            "Missing required parameters: code and redirect_uri are required",
-        });
-      }
+    if (data.grant_type === "authorization_code") {
+      const { code, redirect_uri, code_verifier } = data;
 
       try {
         // Exchange authorization code for access token
@@ -479,12 +574,8 @@ app.openapi(
       }
     }
 
-    if (grant_type === "refresh_token") {
-      if (!refresh_token) {
-        throw new HTTPException(400, {
-          message: "Missing refresh_token",
-        });
-      }
+    if (data.grant_type === "refresh_token") {
+      const { refresh_token, scope } = data;
 
       try {
         // Parse requested scopes
@@ -552,20 +643,9 @@ app.openapi(
     path: "/revoke",
     summary: "OAuth Token Revocation",
     operationId: "postOAuthRevoke",
-    description: "Revoke an access token or refresh token",
+    description:
+      "Revoke an access token or refresh token. Accepts application/json or application/x-www-form-urlencoded.",
     tags: ["OAuth"],
-    request: {
-      body: {
-        content: {
-          "application/json": {
-            schema: oauthRevokeTokenRequestSchema,
-          },
-          "application/x-www-form-urlencoded": {
-            schema: oauthRevokeTokenRequestSchema,
-          },
-        },
-      },
-    },
     responses: {
       200: {
         description: "Token revocation successful",
@@ -587,14 +667,23 @@ app.openapi(
     if (contentType.includes("application/x-www-form-urlencoded")) {
       body = await c.req.parseBody();
     } else {
-      body = c.req.valid("json");
+      body = await c.req.json();
     }
 
-    const { token, client_id, client_secret } = body;
+    const parsed = oauthRevokeTokenRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new HTTPException(400, {
+        message: parsed.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; "),
+      });
+    }
+
+    const { token, client_id, client_secret } = parsed.data;
 
     // Validate client credentials
     const application = await getOAuthApplicationByClientId(db, client_id);
-    if (!application || !application.active) {
+    if (!application?.active) {
       throw new HTTPException(400, {
         message: "Invalid client credentials",
       });
@@ -609,7 +698,10 @@ app.openapi(
       }
     } else {
       // For confidential clients, validate client_secret
-      if (!validateClientCredentials(application, client_secret)) {
+      if (
+        !client_secret ||
+        !validateClientCredentials(application, client_secret)
+      ) {
         throw new HTTPException(400, {
           message: "Invalid client credentials",
         });

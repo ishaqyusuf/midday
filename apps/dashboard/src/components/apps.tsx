@@ -3,7 +3,11 @@
 import { apps as appStoreApps } from "@midday/app-store";
 import type { UnifiedApp } from "@midday/app-store/types";
 import { Button } from "@midday/ui/button";
-import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import {
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect } from "react";
 import { AppConnectionToast } from "@/components/app-connection-toast";
@@ -60,6 +64,18 @@ export function Apps() {
   // Fetch Stripe status for Stripe Payments app
   const { data: stripeStatus } = useSuspenseQuery(
     trpc.invoicePayments.stripeStatus.queryOptions(),
+  );
+
+  const { data: catalog } = useSuspenseQuery(
+    trpc.connectors.list.queryOptions(undefined, {
+      staleTime: 30 * 60 * 1000,
+    }),
+  );
+
+  const { data: connections } = useQuery(
+    trpc.connectors.connections.queryOptions(undefined, {
+      staleTime: 2 * 60 * 1000,
+    }),
   );
 
   const searchParams = useSearchParams();
@@ -131,9 +147,11 @@ export function Apps() {
     };
   });
 
-  // Transform external apps (only approved ones)
+  // Transform external apps (only approved, manually created ones — exclude DCR apps)
   const approvedExternalApps =
-    externalAppsData?.data?.filter((app) => app.status === "approved") || [];
+    externalAppsData?.data?.filter(
+      (app) => app.status === "approved" && !app.slug?.startsWith("dcr-"),
+    ) || [];
   const transformedExternalApps: UnifiedApp[] = approvedExternalApps.map(
     (app) => ({
       id: app.id,
@@ -165,15 +183,52 @@ export function Apps() {
     }),
   );
 
+  const connectionMap = new Map(
+    (connections ?? []).map((c) => [c.slug, c.connectedAccountId]),
+  );
+
+  const transformedConnectorApps: UnifiedApp[] = catalog.map(
+    (c: {
+      slug: string;
+      name: string;
+      logo: string | null;
+      description: string | null;
+    }) => ({
+      id: `connector-${c.slug}`,
+      name: c.name,
+      category: "Connected app",
+      active: true,
+      logo: c.logo || undefined,
+      short_description:
+        c.description || `Connect ${c.name} to use with the AI assistant.`,
+      images: [],
+      installed: connectionMap.has(c.slug),
+      type: "connector" as const,
+      connectorSlug: c.slug,
+      connectedAccountId: connectionMap.get(c.slug) || undefined,
+    }),
+  );
+
   // Combine all apps
-  const allApps = [...transformedOfficialApps, ...transformedExternalApps];
+  const allApps = [
+    ...transformedOfficialApps,
+    ...transformedExternalApps,
+    ...transformedConnectorApps,
+  ];
 
   // Filter apps
   const filteredApps = allApps
     .filter((app) => !isInstalledPage || app.installed)
-    .filter(
-      (app) => !search || app.name.toLowerCase().includes(search.toLowerCase()),
-    );
+    .filter((app) => {
+      if (!search) return true;
+      const q = search.toLowerCase();
+      return (
+        app.name.toLowerCase().includes(q) ||
+        app.id.toLowerCase().includes(q) ||
+        (typeof app.category === "string" &&
+          app.category.toLowerCase().includes(q))
+      );
+    });
 
   return (
     <>

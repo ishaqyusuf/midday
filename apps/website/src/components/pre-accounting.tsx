@@ -1,15 +1,17 @@
 "use client";
 
+import { track } from "@midday/events/client";
+import { LogEvents } from "@midday/events/events";
+import { BulkReconciliationAnimation } from "@midday/ui/animations/bulk-reconciliation";
+import { DashboardAnimation } from "@midday/ui/animations/dashboard";
+import { InboxMatchAnimation } from "@midday/ui/animations/inbox-match";
+import { TransactionFlowAnimation } from "@midday/ui/animations/transaction-flow";
 import { Button } from "@midday/ui/button";
 import { motion } from "motion/react";
 import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
-import { BulkReconciliationAnimation } from "./homepage/bulk-reconciliation-animation";
-import { DashboardAnimation } from "./homepage/dashboard-animation";
 import { MaterialIcon } from "./homepage/icon-mapping";
-import { InboxMatchAnimation } from "./homepage/inbox-match-animation";
-import { TransactionFlowAnimation } from "./homepage/transaction-flow-animation";
 import { FeaturesGridSection } from "./sections/features-grid-section";
 import { PricingSection } from "./sections/pricing-section";
 
@@ -85,8 +87,8 @@ export function PreAccounting() {
                 Pre-accounting, handled.
               </h1>
               <p className="text-muted-foreground text-base leading-normal font-sans text-center mx-auto">
-                Midday collects, matches, and prepares your financial data so
-                your books are always ready before they reach an accountant.
+                Midday collects, matches, and prepares your data so your books
+                are always ready before they reach an accountant.
               </p>
             </div>
 
@@ -97,7 +99,19 @@ export function PreAccounting() {
                   asChild
                   className="w-full sm:w-auto h-11 px-6 text-sm font-sans"
                 >
-                  <a href="https://app.midday.ai/">Start free trial</a>
+                  <a
+                    href="https://app.midday.ai/"
+                    onClick={() =>
+                      track({
+                        event: LogEvents.CTA.name,
+                        channel: LogEvents.CTA.channel,
+                        label: "Start free trial",
+                        position: "pre_accounting_hero",
+                      })
+                    }
+                  >
+                    Start free trial
+                  </a>
                 </Button>
                 <Button
                   variant="outline"
@@ -158,15 +172,27 @@ export function PreAccounting() {
                 Pre-accounting, handled.
               </h1>
               <p className="text-muted-foreground text-sm xl:text-base leading-normal max-w-xl mx-auto font-sans text-center">
-                Midday collects, matches, and prepares your financial data so
-                your books are always ready before they reach an accountant.
+                Midday collects, matches, and prepares your data so your books
+                are always ready before they reach an accountant.
               </p>
             </div>
 
             {/* CTA Buttons */}
             <div className="flex gap-6 justify-center">
               <Button asChild className="h-11 px-6 text-sm font-sans">
-                <a href="https://app.midday.ai/">Start free trial</a>
+                <a
+                  href="https://app.midday.ai/"
+                  onClick={() =>
+                    track({
+                      event: LogEvents.CTA.name,
+                      channel: LogEvents.CTA.channel,
+                      label: "Start free trial",
+                      position: "pre_accounting_hero",
+                    })
+                  }
+                >
+                  Start free trial
+                </a>
               </Button>
               <Button
                 variant="outline"

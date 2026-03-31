@@ -30,9 +30,7 @@ jobs:
       api: ${{ steps.affected.outputs.api }}
       dashboard: ${{ steps.affected.outputs.dashboard }}
       worker: ${{ steps.affected.outputs.worker }}
-      engine: ${{ steps.affected.outputs.engine }}
       website: ${{ steps.affected.outputs.website }}
-      email: ${{ steps.affected.outputs.email }}
       jobs: ${{ steps.affected.outputs.jobs }}
     steps:
       - uses: actions/checkout@v4
@@ -49,9 +47,7 @@ jobs:
           echo "api=$(echo "$AFFECTED" | grep -q '@midday/api' && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
           echo "dashboard=$(echo "$AFFECTED" | grep -q '@midday/dashboard' && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
           echo "worker=$(echo "$AFFECTED" | grep -q '@midday/worker' && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-          echo "engine=$(echo "$AFFECTED" | grep -q '@midday/engine' && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
           echo "website=$(echo "$AFFECTED" | grep -q '@midday/website' && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
-          echo "email=$(echo "$AFFECTED" | grep -q '@midday/email' && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
           echo "jobs=$(echo "$AFFECTED" | grep -q '@midday/jobs' && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
 
   # ---------------------------------------------------------------------------
@@ -61,9 +57,24 @@ jobs:
     name: Validate
     runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 20
+    services:
+      postgres-test:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: midday_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
     env:
       NODE_OPTIONS: "--max-old-space-size=8192"
       TURBO_SCM_BASE: ${{ github.event.before }}
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5433/midday_test
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,11 +82,17 @@ jobs:
 
       - uses: ./.github/actions/setup
 
+      - name: Setup test database schema
+        run: |
+          PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres -d midday_test -f src/test/helpers/setup-test-db.sql
+          bunx drizzle-kit push --config=drizzle.config.test.ts --force
+        working-directory: packages/db
+
       - name: Lint
         run: bunx turbo lint --affected
 
       - name: Build required type dependencies
-        run: bunx turbo build --filter=workbench --filter=@midday/engine
+        run: bunx turbo build --filter=workbench
 
       - name: Typecheck
         run: bunx turbo typecheck --affected
@@ -84,25 +101,89 @@ jobs:
         run: bunx turbo test --affected
 
   # ---------------------------------------------------------------------------
+  # Tool selection evals — runs when API changes to catch regressions
+  # ---------------------------------------------------------------------------
+  eval-tool-selection:
+    name: Tool selection evals
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.api == 'true'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+
+      - name: Rebuild better-sqlite3 for Node
+        run: cd node_modules/better-sqlite3 && npx --yes node-gyp rebuild
+
+      - name: Run tool selection evals
+        run: bun run eval:run
+        working-directory: apps/api
+
+  # ---------------------------------------------------------------------------
   # Deploy API to Railway
   # ---------------------------------------------------------------------------
   deploy-api:
     name: Deploy API
-    needs: [detect-changes, validate]
+    needs: [detect-changes, validate, eval-tool-selection]
     if: >-
       always() &&
       needs.validate.result == 'success' &&
-      needs.detect-changes.outputs.api == 'true'
+      needs.detect-changes.outputs.api == 'true' &&
+      (needs.eval-tool-selection.result == 'success' || needs.eval-tool-selection.result == 'skipped')
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 20
     concurrency: railway-api-production
     steps:
       - uses: actions/checkout@v4
 
+      - name: Stamp git SHA for Docker build
+        run: echo "${{ github.sha }}" > .git-commit-sha
+
       - name: Deploy to Railway
         run: npx @railway/cli up --service api
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # E2E smoke tests — runs against production API after deployment
+  # ---------------------------------------------------------------------------
+  e2e-api:
+    name: E2E API tests
+    needs: [detect-changes, validate, deploy-api]
+    if: >-
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.deploy-api.result == 'success'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+
+      - name: Wait for API to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf "${{ secrets.PRODUCTION_API_URL }}/health" > /dev/null 2>&1; then
+              echo "API is healthy"
+              exit 0
+            fi
+            echo "Waiting for API... ($i/30)"
+            sleep 5
+          done
+          echo "API did not become healthy in time"
+          exit 1
+
+      - name: Run E2E tests against production
+        env:
+          API_BASE_URL: ${{ secrets.PRODUCTION_API_URL }}
+          MIDDAY_API_KEY: ${{ secrets.PRODUCTION_API_KEY }}
+        run: bun test --exit --timeout 60000 src/__tests__/e2e/
+        working-directory: apps/api
 
   # ---------------------------------------------------------------------------
   # Deploy Dashboard to Railway (waits for API when both change)
@@ -120,6 +201,9 @@ jobs:
     concurrency: railway-dashboard-production
     steps:
       - uses: actions/checkout@v4
+
+      - name: Stamp git SHA for Docker build
+        run: echo "${{ github.sha }}" > .git-commit-sha
 
       - name: Deploy to Railway
         run: npx @railway/cli up --service dashboard
@@ -143,36 +227,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Stamp git SHA for Docker build
+        run: echo "${{ github.sha }}" > .git-commit-sha
+
       - name: Deploy to Railway
         run: npx @railway/cli up --service worker
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-
-  # ---------------------------------------------------------------------------
-  # Deploy Engine to Cloudflare
-  # ---------------------------------------------------------------------------
-  deploy-engine:
-    name: Deploy Engine
-    needs: [detect-changes, validate]
-    if: >-
-      always() &&
-      needs.validate.result == 'success' &&
-      needs.detect-changes.outputs.engine == 'true'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/setup
-
-      - name: Deploy to Cloudflare
-        uses: cloudflare/wrangler-action@v3
-        with:
-          packageManager: bun
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          workingDirectory: "apps/engine"
-          wranglerVersion: "4.33.2"
-          command: deploy --minify src/index.ts --env production
 
   # ---------------------------------------------------------------------------
   # Deploy Website to Vercel
@@ -208,40 +269,6 @@ jobs:
         run: |
           bunx vercel deploy --prebuilt --prod --archive=tgz --token=${{ secrets.VERCEL_TOKEN }} > domain.txt
           bunx vercel alias --scope=${{ secrets.VERCEL_ORG_ID }} --token=${{ secrets.VERCEL_TOKEN }} set $(cat domain.txt) midday.ai
-
-  # ---------------------------------------------------------------------------
-  # Deploy Email to Vercel
-  # ---------------------------------------------------------------------------
-  deploy-email:
-    name: Deploy Email
-    needs: [detect-changes, validate]
-    if: >-
-      always() &&
-      needs.validate.result == 'success' &&
-      needs.detect-changes.outputs.email == 'true'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 10
-    env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_EMAIL }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: ./.github/actions/setup
-
-      - name: Pull Vercel environment
-        run: bunx vercel env pull .env --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Pull Vercel project config
-        run: bunx vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Build
-        run: bunx vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Deploy
-        run: |
-          bunx vercel deploy --prebuilt --prod --archive=tgz --token=${{ secrets.VERCEL_TOKEN }} > domain.txt
-          bunx vercel alias --scope=${{ secrets.VERCEL_ORG_ID }} --token=${{ secrets.VERCEL_TOKEN }} set $(cat domain.txt) email.midday.ai
 
   # ---------------------------------------------------------------------------
   # Deploy Jobs to Trigger.dev

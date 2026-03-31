@@ -120,28 +120,14 @@ app.openapi(
         return {
           ...invoiceWithoutToken,
           ...calculatedAmounts,
-          paymentDetails: invoice.paymentDetails
-            ? JSON.stringify(invoice.paymentDetails)
-            : null,
-          customerDetails: invoice.customerDetails
-            ? JSON.stringify(invoice.customerDetails)
-            : null,
-          fromDetails: invoice.fromDetails
-            ? JSON.stringify(invoice.fromDetails)
-            : null,
-          noteDetails: invoice.noteDetails
-            ? JSON.stringify(invoice.noteDetails)
-            : null,
-          topBlock: invoice.topBlock ? JSON.stringify(invoice.topBlock) : null,
-          bottomBlock: invoice.bottomBlock
-            ? JSON.stringify(invoice.bottomBlock)
-            : null,
-          pdfUrl: token
-            ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
-            : null,
-          previewUrl: token
-            ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
-            : null,
+          pdfUrl:
+            token && process.env.MIDDAY_DASHBOARD_URL
+              ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
+              : null,
+          previewUrl:
+            token && process.env.MIDDAY_DASHBOARD_URL
+              ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
+              : null,
         };
       }),
     };
@@ -155,6 +141,8 @@ app.openapi(
     method: "get",
     path: "/payment-status",
     summary: "Payment status",
+    operationId: "getInvoicePaymentStatus",
+    "x-speakeasy-name-override": "paymentStatus",
     description: "Get payment status for the authenticated team.",
     tags: ["Invoices"],
     responses: {
@@ -311,12 +299,14 @@ app.openapi(
       bottomBlock: result.bottomBlock
         ? JSON.stringify(result.bottomBlock)
         : null,
-      pdfUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
-        : null,
-      previewUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
-        : null,
+      pdfUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
+          : null,
+      previewUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
+          : null,
     };
 
     return c.json(validateResponse(response, invoiceResponseSchema));
@@ -335,6 +325,7 @@ app.openapi(
     tags: ["Invoices"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: draftInvoiceRequestSchema,
@@ -622,12 +613,14 @@ app.openapi(
       bottomBlock: result.bottomBlock
         ? JSON.stringify(result.bottomBlock)
         : null,
-      pdfUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
-        : null,
-      previewUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
-        : null,
+      pdfUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
+          : null,
+      previewUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
+          : null,
     };
 
     return c.json(validateResponse(response, draftInvoiceResponseSchema), 201);
@@ -647,6 +640,7 @@ app.openapi(
     request: {
       params: getInvoiceByIdSchema.pick({ id: true }),
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: updateInvoiceRequestSchema,
@@ -673,18 +667,19 @@ app.openapi(
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
 
-    const result = await updateInvoice(db, {
+    await updateInvoice(db, {
       id,
       teamId,
       userId,
       ...input,
     });
 
+    const result = await getInvoiceById(db, { id, teamId });
+
     if (!result) {
       throw new HTTPException(404, { message: "Invoice not found" });
     }
 
-    // Add PDF download and preview URLs and serialize objects like tRPC does with superjson
     const { token, ...resultWithoutToken } = result;
     const response = {
       ...resultWithoutToken,
@@ -704,12 +699,14 @@ app.openapi(
       bottomBlock: result.bottomBlock
         ? JSON.stringify(result.bottomBlock)
         : null,
-      pdfUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
-        : null,
-      previewUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
-        : null,
+      pdfUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
+          : null,
+      previewUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
+          : null,
     };
 
     return c.json(validateResponse(response, updateInvoiceResponseSchema));

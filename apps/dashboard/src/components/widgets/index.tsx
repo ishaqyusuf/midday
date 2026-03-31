@@ -1,89 +1,75 @@
 "use client";
 
-import type { AppRouter } from "@midday/api/trpc/routers/_app";
-import { cn } from "@midday/ui/cn";
-import { Skeleton } from "@midday/ui/skeleton";
-import { Tabs, TabsContent } from "@midday/ui/tabs";
-import type { inferRouterOutputs } from "@trpc/server";
-import { Suspense } from "react";
-import { useChatInterface } from "@/hooks/use-chat-interface";
-import { useInsightFromUrl } from "@/hooks/use-insight-from-url";
-import { useOverviewTab } from "@/hooks/use-overview-tab";
-import { usePrefetchMetrics } from "@/hooks/use-prefetch-metrics";
-import { MetricsView } from "../metrics/metrics-view";
-import { SuggestedActions } from "../suggested-actions";
-import { WidgetsHeader } from "./header";
-import { useIsCustomizing, WidgetProvider } from "./widget-provider";
-import { WidgetsGrid } from "./widgets-grid";
+import { LogEvents } from "@midday/events/events";
+import { Button } from "@midday/ui/button";
+import { Icons } from "@midday/ui/icons";
+import { useOpenPanel } from "@openpanel/nextjs";
+import { parseAsBoolean, useQueryState } from "nuqs";
+import { Suspense, useCallback } from "react";
+import { ChatProvider } from "@/components/chat/chat-context";
+import { ChatTitle } from "@/components/chat/chat-title";
+import { ChatView } from "@/components/chat/chat-view";
+import { NewChatButton } from "@/components/chat/new-chat-button";
+import { useInvoiceParams } from "@/hooks/use-invoice-params";
+import { AskMidday } from "./ask-midday";
+import { McpBanner } from "./mcp-banner";
+import { SummarySkeleton, WidgetCardsSkeleton } from "./overview-skeleton";
+import { QuickActions } from "./quick-actions";
+import { WelcomeGreeting, WelcomeSummary } from "./welcome-section";
+import { WidgetCards } from "./widget-cards";
 
-type RouterOutputs = inferRouterOutputs<AppRouter>;
-type WidgetPreferences = RouterOutputs["widgets"]["getWidgetPreferences"];
+export function OverviewView() {
+  const [assistant, setAssistant] = useQueryState("assistant", parseAsBoolean);
+  const { track } = useOpenPanel();
+  const { setParams: setInvoiceParams } = useInvoiceParams();
 
-function SuggestedActionsSkeleton() {
-  const skeletonWidths = ["w-28", "w-32", "w-36", "w-28", "w-32", "w-28"];
+  const isChat = assistant === true;
+
+  const openChat = useCallback(() => {
+    track(LogEvents.AssistantOpened.name);
+    setAssistant(true);
+  }, [track, setAssistant]);
+
+  const goBack = useCallback(() => {
+    setInvoiceParams(null);
+    setAssistant(null);
+  }, [setInvoiceParams, setAssistant]);
 
   return (
-    <div className="w-[calc(100%+16px)] md:w-full -mx-4 md:mx-0 md:px-6 mt-10 mb-8 flex items-center justify-center">
-      <div className="flex gap-3 overflow-x-auto scrollbar-hide w-full md:w-auto pl-4 md:pl-0">
-        {skeletonWidths.map((width, index) => (
-          <Skeleton
-            key={`suggested-actions-skeleton-${index.toString()}`}
-            className={`${width} h-[34px] border border-[#e6e6e6] dark:border-[#1d1d1d] flex-shrink-0`}
+    <ChatProvider>
+      {isChat && (
+        <div>
+          <ChatView
+            onClose={goBack}
+            header={
+              <>
+                <Button variant="outline" size="icon" onClick={goBack}>
+                  <Icons.ArrowBack className="size-4" />
+                </Button>
+                <ChatTitle />
+                <NewChatButton variant="outline" />
+              </>
+            }
           />
-        ))}
-      </div>
-    </div>
-  );
-}
+        </div>
+      )}
 
-function WidgetsContent() {
-  const { isChatPage, isHome } = useChatInterface();
-  const isCustomizing = useIsCustomizing();
-  const { tab, setTab } = useOverviewTab();
-
-  // Prefetch metrics data in background when on overview tab
-  usePrefetchMetrics();
-
-  // Handle ?insight= query parameter from email links
-  useInsightFromUrl();
-
-  if (isChatPage) {
-    return null;
-  }
-
-  return (
-    <Tabs value={tab} onValueChange={setTab}>
-      <div
-        className={cn(
-          "flex flex-col mt-6",
-          isHome && "widgets-container-spacing",
-        )}
-      >
-        <WidgetsHeader />
-        <TabsContent value="overview">
-          <WidgetsGrid />
-          {!isCustomizing && (
-            <Suspense fallback={<SuggestedActionsSkeleton />}>
-              <SuggestedActions />
+      {!isChat && (
+        <div className="mt-2 pb-16 flex flex-col justify-center min-h-[calc(100vh-120px)] max-w-3xl mx-auto w-full">
+          <div className="flex flex-col items-center text-center pt-6 pb-10 w-full">
+            <WelcomeGreeting />
+            <Suspense fallback={<SummarySkeleton />}>
+              <WelcomeSummary />
             </Suspense>
-          )}
-        </TabsContent>
-        <TabsContent value="metrics">
-          <MetricsView />
-        </TabsContent>
-      </div>
-    </Tabs>
-  );
-}
-
-interface WidgetsProps {
-  initialPreferences: WidgetPreferences;
-}
-
-export function Widgets({ initialPreferences }: WidgetsProps) {
-  return (
-    <WidgetProvider initialPreferences={initialPreferences}>
-      <WidgetsContent />
-    </WidgetProvider>
+          </div>
+          <AskMidday onChatOpen={openChat} />
+          <QuickActions onChatOpen={openChat} />
+          <Suspense fallback={<WidgetCardsSkeleton />}>
+            <WidgetCards />
+          </Suspense>
+          <McpBanner />
+        </div>
+      )}
+    </ChatProvider>
   );
 }

@@ -1,5 +1,7 @@
 "use client";
 
+import { track } from "@midday/events/client";
+import { LogEvents } from "@midday/events/events";
 import { cn } from "@midday/ui/cn";
 import { Icons } from "@midday/ui/icons";
 import { motion } from "motion/react";
@@ -47,6 +49,16 @@ const headerTestimonials: Testimonial[] = [
       "Company\nSmarch is a software development agency specializing in e-commerce, web applications, and custom backend systems.\n\nChallenge\nBefore Midday, I was manually creating PDF invoices, piecing together bank reports to understand how the company was doing, and collecting financial documents every time accounting needed something. It was scattered and tedious.\n\nImpact\nEverything lives in one place now. I set up invoice templates once, have all clients organized, get real analytics on company performance, and keep documents in a proper vault. What used to take hours of admin work is now streamlined and mostly automatic.\n\nFavorite features\nInvoice templates. They eliminate repetitive work when billing multiple clients.",
   },
   {
+    name: "Isabel Sá",
+    title: "",
+    company: "Character",
+    country: "Portugal",
+    content:
+      "I find myself having a better sense of runway and financials than before. The auto-reconciliation of payments and receipts is a game changer.",
+    fullContent:
+      "Company\nCharacter is a software design studio.\n\nChallenge\nGetting the big picture across banks and currencies. We have both Portuguese and Belgian bank accounts, and reconciling these two was always difficult. There was no easy way to see everything in one place.\n\nImpact\nA much better sense of runway and financials than before. Both bigger picture things like tax breakdowns, and smaller things like keeping an eye on expenses and removing unused subscriptions. The accounting team just logs in to Midday to grab what they need.\n\nFavorite features\nInbox and Transactions. The transactions tab was already a major upgrade from the previous workflow in Excel, but the auto-reconciliation of payments and receipts is a game changer. Drastically reduced time spent on it. We're also in the process of migrating invoicing to Midday to get the full network effect.",
+  },
+  {
     name: "Ciarán Harris",
     title: "",
     company: "CogniStream",
@@ -78,7 +90,7 @@ const FEATURE_ROUTES = [
 ];
 
 // App pages to prefetch on hover
-const APP_ROUTES = ["/integrations", "/download", "/docs", "/mcp"];
+const APP_ROUTES = ["/integrations", "/download", "/docs", "/agents", "/mcp"];
 
 export function Header({
   transparent = false,
@@ -316,14 +328,9 @@ export function Header({
                             <div>
                               {[
                                 {
-                                  href: "/assistant",
-                                  title: "Assistant",
-                                  desc: "Ask questions and get clear financial answers",
-                                },
-                                {
-                                  href: "/insights",
-                                  title: "Insights",
-                                  desc: "See what's changing",
+                                  href: "/invoicing",
+                                  title: "Invoicing",
+                                  desc: "Get paid faster",
                                 },
                                 {
                                   href: "/transactions",
@@ -334,6 +341,11 @@ export function Header({
                                   href: "/inbox",
                                   title: "Inbox",
                                   desc: "Receipts handled automatically",
+                                },
+                                {
+                                  href: "/time-tracking",
+                                  title: "Time tracking",
+                                  desc: "See where time goes",
                                 },
                               ].map((item, index) => (
                                 <div
@@ -362,16 +374,6 @@ export function Header({
                             <div>
                               {[
                                 {
-                                  href: "/time-tracking",
-                                  title: "Time tracking",
-                                  desc: "See where time goes",
-                                },
-                                {
-                                  href: "/invoicing",
-                                  title: "Invoicing",
-                                  desc: "Get paid faster",
-                                },
-                                {
                                   href: "/customers",
                                   title: "Customers",
                                   desc: "Know your customers",
@@ -380,6 +382,16 @@ export function Header({
                                   href: "/file-storage",
                                   title: "Files",
                                   desc: "Everything in one place",
+                                },
+                                {
+                                  href: "/pre-accounting",
+                                  title: "Exports",
+                                  desc: "Accounting ready",
+                                },
+                                {
+                                  href: "/assistant",
+                                  title: "Assistant",
+                                  desc: "Ask anything, get things done",
                                 },
                               ].map((item, index) => (
                                 <div
@@ -631,9 +643,15 @@ export function Header({
                                   external: false,
                                 },
                                 {
+                                  href: "/agents",
+                                  title: "Agents",
+                                  desc: "Agent-native CLI and MCP workflows.",
+                                  external: false,
+                                },
+                                {
                                   href: "/mcp",
                                   title: "AI Integrations",
-                                  desc: "Connect AI tools to your financial data.",
+                                  desc: "Connect AI tools to your business data.",
                                   external: false,
                                 },
                               ].map((item, index) => (
@@ -787,7 +805,7 @@ export function Header({
                                 Mac app
                               </span>
                               <span className="font-sans text-xs text-muted-foreground group-hover:text-foreground transition-colors duration-200">
-                                Your finances, always one click away.
+                                Your business, always one click away.
                               </span>
                             </div>
                           </Link>
@@ -803,6 +821,14 @@ export function Header({
                 <Link
                   href="https://app.midday.ai/"
                   className="text-sm transition-colors text-primary hover:text-primary/80"
+                  onClick={() =>
+                    track({
+                      event: LogEvents.CTA.name,
+                      channel: LogEvents.CTA.channel,
+                      label: "Sign in",
+                      position: "header",
+                    })
+                  }
                 >
                   Sign in
                 </Link>
@@ -885,94 +911,29 @@ export function Header({
                     <div className="h-px w-full border-t border-border my-2" />
                     <div className="overflow-hidden opacity-0 animate-mobile-slide">
                       <div className="flex flex-col space-y-4 pt-2">
-                        <Link
-                          href="/assistant"
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            setIsMobileFeaturesOpen(false);
-                          }}
-                          className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
-                          style={{ WebkitTapHighlightColor: "transparent" }}
-                        >
-                          Assistant
-                        </Link>
-                        <Link
-                          href="/insights"
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            setIsMobileFeaturesOpen(false);
-                          }}
-                          className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
-                          style={{ WebkitTapHighlightColor: "transparent" }}
-                        >
-                          Insights
-                        </Link>
-                        <Link
-                          href="/transactions"
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            setIsMobileFeaturesOpen(false);
-                          }}
-                          className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
-                          style={{ WebkitTapHighlightColor: "transparent" }}
-                        >
-                          Transactions
-                        </Link>
-                        <Link
-                          href="/inbox"
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            setIsMobileFeaturesOpen(false);
-                          }}
-                          className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
-                          style={{ WebkitTapHighlightColor: "transparent" }}
-                        >
-                          Inbox
-                        </Link>
-                        <Link
-                          href="/time-tracking"
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            setIsMobileFeaturesOpen(false);
-                          }}
-                          className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
-                          style={{ WebkitTapHighlightColor: "transparent" }}
-                        >
-                          Time tracking
-                        </Link>
-                        <Link
-                          href="/invoicing"
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            setIsMobileFeaturesOpen(false);
-                          }}
-                          className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
-                          style={{ WebkitTapHighlightColor: "transparent" }}
-                        >
-                          Invoicing
-                        </Link>
-                        <Link
-                          href="/customers"
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            setIsMobileFeaturesOpen(false);
-                          }}
-                          className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
-                          style={{ WebkitTapHighlightColor: "transparent" }}
-                        >
-                          Customers
-                        </Link>
-                        <Link
-                          href="/file-storage"
-                          onClick={() => {
-                            setIsMenuOpen(false);
-                            setIsMobileFeaturesOpen(false);
-                          }}
-                          className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
-                          style={{ WebkitTapHighlightColor: "transparent" }}
-                        >
-                          Files
-                        </Link>
+                        {[
+                          { href: "/invoicing", label: "Invoicing" },
+                          { href: "/transactions", label: "Transactions" },
+                          { href: "/inbox", label: "Inbox" },
+                          { href: "/time-tracking", label: "Time tracking" },
+                          { href: "/customers", label: "Customers" },
+                          { href: "/file-storage", label: "Files" },
+                          { href: "/pre-accounting", label: "Exports" },
+                          { href: "/assistant", label: "Assistant" },
+                        ].map((item) => (
+                          <Link
+                            key={item.href}
+                            href={item.href}
+                            onClick={() => {
+                              setIsMenuOpen(false);
+                              setIsMobileFeaturesOpen(false);
+                            }}
+                            className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
+                            style={{ WebkitTapHighlightColor: "transparent" }}
+                          >
+                            {item.label}
+                          </Link>
+                        ))}
                       </div>
                     </div>
                   </>
@@ -1087,6 +1048,17 @@ export function Header({
                           Documentation
                         </Link>
                         <Link
+                          href="/agents"
+                          onClick={() => {
+                            setIsMenuOpen(false);
+                            setIsMobileAppsOpen(false);
+                          }}
+                          className="text-lg font-sans text-left text-muted-foreground hover:text-muted-foreground xl:active:text-muted-foreground focus:outline-none focus-visible:outline-none touch-manipulation transition-colors"
+                          style={{ WebkitTapHighlightColor: "transparent" }}
+                        >
+                          Agents
+                        </Link>
+                        <Link
                           href="/mcp"
                           onClick={() => {
                             setIsMenuOpen(false);
@@ -1141,7 +1113,15 @@ export function Header({
                     }
                   }}
                   className="text-2xl font-sans transition-colors py-2 text-primary hover:text-primary xl:active:text-primary focus:outline-none focus-visible:outline-none touch-manipulation"
-                  onClick={() => setIsMenuOpen(false)}
+                  onClick={() => {
+                    setIsMenuOpen(false);
+                    track({
+                      event: LogEvents.CTA.name,
+                      channel: LogEvents.CTA.channel,
+                      label: "Sign in",
+                      position: "header_mobile",
+                    });
+                  }}
                   style={{ WebkitTapHighlightColor: "transparent" }}
                 >
                   Sign in

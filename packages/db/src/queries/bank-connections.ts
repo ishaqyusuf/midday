@@ -1,6 +1,5 @@
-import { chatCache } from "@midday/cache/chat-cache";
 import { decrypt, encrypt } from "@midday/encryption";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Database } from "../client";
 import { bankAccounts, bankConnections } from "../schema";
 
@@ -34,6 +33,7 @@ export const getBankConnections = async (
       bankAccounts: {
         columns: {
           id: true,
+          accountId: true,
           name: true,
           enabled: true,
           manual: true,
@@ -204,10 +204,128 @@ export const createBankConnection = async (
     })),
   );
 
-  // Invalidate team context cache to refresh hasBankAccounts flag
-  await chatCache.invalidateTeamContext(teamId);
-
   return bankConnection;
+};
+
+export type AddProviderAccountsParams = {
+  connectionId: string;
+  teamId: string;
+  userId: string;
+  accounts: {
+    accountId: string;
+    name: string;
+    currency: string;
+    type: "depository" | "credit" | "other_asset" | "loan" | "other_liability";
+    accountReference?: string | null;
+    balance?: number;
+    iban?: string | null;
+    subtype?: string | null;
+    bic?: string | null;
+    routingNumber?: string | null;
+    wireRoutingNumber?: string | null;
+    accountNumber?: string | null;
+    sortCode?: string | null;
+    availableBalance?: number | null;
+    creditLimit?: number | null;
+  }[];
+};
+
+export const addProviderAccounts = async (
+  db: Database,
+  params: AddProviderAccountsParams,
+) => {
+  const { connectionId, teamId, userId, accounts } = params;
+
+  if (accounts.length === 0) return [];
+
+  const connection = await db.query.bankConnections.findFirst({
+    where: and(
+      eq(bankConnections.id, connectionId),
+      eq(bankConnections.teamId, teamId),
+    ),
+    columns: { id: true },
+  });
+
+  if (!connection) return [];
+
+  const existing = await db.query.bankAccounts.findMany({
+    where: and(
+      eq(bankAccounts.bankConnectionId, connectionId),
+      inArray(
+        bankAccounts.accountId,
+        accounts.map((a) => a.accountId),
+      ),
+    ),
+    columns: { accountId: true },
+  });
+
+  const existingIds = new Set(existing.map((e) => e.accountId));
+  const newAccounts = accounts.filter((a) => !existingIds.has(a.accountId));
+
+  if (newAccounts.length === 0) return [];
+
+  return db
+    .insert(bankAccounts)
+    .values(
+      newAccounts.map((account) => ({
+        accountId: account.accountId,
+        bankConnectionId: connectionId,
+        teamId,
+        createdBy: userId,
+        name: account.name,
+        currency: account.currency,
+        enabled: true,
+        type: account.type,
+        accountReference: account.accountReference,
+        balance: account.balance ?? 0,
+        manual: false,
+        subtype: account.subtype,
+        bic: account.bic,
+        routingNumber: account.routingNumber,
+        wireRoutingNumber: account.wireRoutingNumber,
+        sortCode: account.sortCode,
+        iban: account.iban ? encrypt(account.iban) : null,
+        accountNumber: account.accountNumber
+          ? encrypt(account.accountNumber)
+          : null,
+        availableBalance: account.availableBalance,
+        creditLimit: account.creditLimit,
+      })),
+    )
+    .returning();
+};
+
+export type ReconnectBankConnectionParams = {
+  referenceId: string;
+  newReferenceId: string;
+  expiresAt: string;
+  teamId: string;
+};
+
+export const reconnectBankConnection = async (
+  db: Database,
+  params: ReconnectBankConnectionParams,
+) => {
+  const { referenceId, newReferenceId, expiresAt, teamId } = params;
+
+  const [result] = await db
+    .update(bankConnections)
+    .set({
+      referenceId: newReferenceId,
+      expiresAt,
+      status: "connected",
+    })
+    .where(
+      and(
+        eq(bankConnections.referenceId, referenceId),
+        eq(bankConnections.teamId, teamId),
+      ),
+    )
+    .returning({
+      id: bankConnections.id,
+    });
+
+  return result;
 };
 
 export type GetBankAccountDetailsParams = {
@@ -255,6 +373,63 @@ export const getBankAccountDetails = async (
     bic: account.bic,
     sortCode: account.sortCode,
   };
+};
+
+export const getBankConnectionByEnrollmentId = async (
+  db: Database,
+  params: { enrollmentId: string },
+) => {
+  return db.query.bankConnections.findFirst({
+    where: eq(bankConnections.enrollmentId, params.enrollmentId),
+    columns: {
+      id: true,
+      createdAt: true,
+    },
+    with: {
+      team: {
+        columns: {
+          id: true,
+          plan: true,
+          createdAt: true,
+        },
+      },
+    },
+  });
+};
+
+export const getBankConnectionByReferenceId = async (
+  db: Database,
+  params: { referenceId: string },
+) => {
+  return db.query.bankConnections.findFirst({
+    where: eq(bankConnections.referenceId, params.referenceId),
+    columns: {
+      id: true,
+      createdAt: true,
+    },
+    with: {
+      team: {
+        columns: {
+          id: true,
+          plan: true,
+          createdAt: true,
+        },
+      },
+    },
+  });
+};
+
+export const updateBankConnectionStatus = async (
+  db: Database,
+  params: { id: string; status: "connected" | "disconnected" | "unknown" },
+) => {
+  const [result] = await db
+    .update(bankConnections)
+    .set({ status: params.status })
+    .where(eq(bankConnections.id, params.id))
+    .returning({ id: bankConnections.id });
+
+  return result;
 };
 
 export type GetBankAccountsWithPaymentInfoParams = {

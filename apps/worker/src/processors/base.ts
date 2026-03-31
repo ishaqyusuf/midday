@@ -9,6 +9,7 @@ import {
   isNonRetryableError,
   NonRetryableError,
 } from "../utils/error-classification";
+import { extractErrorDetails } from "../utils/error-details";
 
 /**
  * Base processor class with error handling, retries, and logging
@@ -157,6 +158,7 @@ export abstract class BaseProcessor<TData = unknown> {
       const errorMessage =
         error instanceof Error ? error.message : "Unknown error";
       const errorStack = error instanceof Error ? error.stack : undefined;
+      const errorDetails = extractErrorDetails(error);
       const classified = classifyError(error);
 
       // Check if this is a non-retryable error
@@ -180,6 +182,7 @@ export abstract class BaseProcessor<TData = unknown> {
         suggestedRetryDelay: getRetryDelay(error),
         suggestedMaxRetries: getMaxRetries(error),
         stack: errorStack,
+        errorDetails,
       });
 
       // Only send to Sentry on final attempt or non-retryable errors
@@ -254,6 +257,7 @@ export abstract class BaseProcessor<TData = unknown> {
     job: Job<TData>,
     progress: number,
     message?: string,
+    step?: string,
   ): Promise<void> {
     // Clamp progress to 0-100
     const clampedProgress = Math.max(0, Math.min(100, progress));
@@ -262,11 +266,16 @@ export abstract class BaseProcessor<TData = unknown> {
       // Check if updateProgress method exists and is callable
       // Some job types or BullMQ versions may not have this method
       if (job.updateProgress && typeof job.updateProgress === "function") {
-        await job.updateProgress(clampedProgress);
+        await job.updateProgress({
+          progress: clampedProgress,
+          message,
+          step,
+        });
         this.logger.debug("Progress updated", {
           jobId: job.id,
           progress: `${clampedProgress}%`,
           message,
+          step,
         });
       } else {
         // Silently skip if updateProgress is not available
@@ -274,6 +283,7 @@ export abstract class BaseProcessor<TData = unknown> {
           jobId: job.id,
           progress: `${clampedProgress}%`,
           message,
+          step,
         });
       }
     } catch (error) {

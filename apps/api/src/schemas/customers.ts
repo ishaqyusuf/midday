@@ -7,6 +7,9 @@ export const getCustomersSchema = z
       .string()
       .nullable()
       .optional()
+      .describe(
+        "Search query to filter customers by name, email, or other fields",
+      )
       .openapi({
         description:
           "Search query string to filter customers by name, email, or other text fields",
@@ -21,9 +24,12 @@ export const getCustomersSchema = z
       .min(2)
       .nullable()
       .optional()
+      .describe(
+        "Sort as [column, direction]. Columns: name, created_at, contact, email, invoices, projects, tags, industry, country, total_revenue, outstanding, last_invoice. Direction: asc or desc.",
+      )
       .openapi({
         description:
-          "Sorting order as a tuple: [field, direction]. Example: ['name', 'asc'] or ['createdAt', 'desc']",
+          "Sort as [column, direction]. Columns: name, created_at, contact, email, invoices, projects, tags, industry, country, total_revenue, outstanding, last_invoice. Direction: asc or desc.",
         example: ["name", "asc"],
         param: {
           in: "query",
@@ -32,6 +38,7 @@ export const getCustomersSchema = z
     cursor: z
       .string()
       .optional()
+      .describe("Pagination cursor from previous response")
       .openapi({
         description:
           "Cursor for pagination, representing the last item from the previous page",
@@ -45,6 +52,7 @@ export const getCustomersSchema = z
       .min(1)
       .max(100)
       .optional()
+      .describe("Number of customers per page (1-100)")
       .openapi({
         description: "Number of customers to return per page (1-100)",
         example: 20,

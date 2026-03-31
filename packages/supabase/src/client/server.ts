@@ -2,35 +2,6 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type { Database } from "../types";
 
-const conWarn = console.warn;
-const conLog = console.log;
-
-const IGNORE_WARNINGS = [
-  "Using the user object as returned from supabase.auth.getSession()",
-];
-
-console.warn = (...args) => {
-  const match = args.find((arg) =>
-    typeof arg === "string"
-      ? IGNORE_WARNINGS.find((warning) => arg.includes(warning))
-      : false,
-  );
-  if (!match) {
-    conWarn(...args);
-  }
-};
-
-console.log = (...args) => {
-  const match = args.find((arg) =>
-    typeof arg === "string"
-      ? IGNORE_WARNINGS.find((warning) => arg.includes(warning))
-      : false,
-  );
-  if (!match) {
-    conLog(...args);
-  }
-};
-
 type CreateClientOptions = {
   admin?: boolean;
   schema?: "public" | "storage";
@@ -41,8 +12,8 @@ export async function createClient(options?: CreateClientOptions) {
   const cookieStore = await cookies();
 
   const key = admin
-    ? process.env.SUPABASE_SERVICE_KEY!
-    : process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+    ? process.env.SUPABASE_SECRET_KEY!
+    : process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
 
   const auth = admin
     ? {
@@ -52,7 +23,7 @@ export async function createClient(options?: CreateClientOptions) {
       }
     : {};
 
-  return createServerClient<Database>(
+  const client = createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     key,
     {
@@ -76,4 +47,12 @@ export async function createClient(options?: CreateClientOptions) {
       auth,
     },
   );
+
+  // The middleware validates and refreshes tokens via getClaims().
+  // Server components only call getSession() to read the access token
+  // from cookies — suppress the "use getUser() instead" warning.
+  // @ts-expect-error - suppressGetSessionWarning is a protected property
+  client.auth.suppressGetSessionWarning = true;
+
+  return client;
 }

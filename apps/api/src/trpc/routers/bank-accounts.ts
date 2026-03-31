@@ -3,9 +3,11 @@ import {
   deleteBankAccountSchema,
   getBankAccountDetailsSchema,
   getBankAccountsSchema,
+  getTransactionCountSchema,
   updateBankAccountSchema,
 } from "@api/schemas/bank-accounts";
 import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
+
 import {
   createBankAccount,
   deleteBankAccount,
@@ -14,6 +16,7 @@ import {
   getBankAccountsBalances,
   getBankAccountsCurrencies,
   getBankAccountsWithPaymentInfo,
+  getTransactionCountByBankAccountId,
   updateBankAccount,
 } from "@midday/db/queries";
 
@@ -26,6 +29,16 @@ export const bankAccountsRouter = createTRPCRouter({
         enabled: input?.enabled,
         manual: input?.manual,
       });
+    }),
+
+  getTransactionCount: protectedProcedure
+    .input(getTransactionCountSchema)
+    .query(async ({ input, ctx: { db, teamId } }) => {
+      const count = await getTransactionCountByBankAccountId(db, {
+        bankAccountId: input.id,
+        teamId: teamId!,
+      });
+      return { count };
     }),
 
   /**
@@ -65,10 +78,12 @@ export const bankAccountsRouter = createTRPCRouter({
   delete: protectedProcedure
     .input(deleteBankAccountSchema)
     .mutation(async ({ input, ctx: { db, teamId } }) => {
-      return deleteBankAccount(db, {
+      const result = await deleteBankAccount(db, {
         id: input.id,
         teamId: teamId!,
       });
+
+      return result;
     }),
 
   update: protectedProcedure
@@ -84,11 +99,13 @@ export const bankAccountsRouter = createTRPCRouter({
   create: protectedProcedure
     .input(createBankAccountSchema)
     .mutation(async ({ input, ctx: { db, teamId, session } }) => {
-      return createBankAccount(db, {
+      const result = await createBankAccount(db, {
         ...input,
         teamId: teamId!,
         userId: session.user.id,
         manual: input.manual,
       });
+
+      return result;
     }),
 });

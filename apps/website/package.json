@@ -11,29 +11,31 @@
     "start": "next start"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.12",
-    "@ai-sdk/react": "^3.0.43",
+    "@ai-sdk/openai": "^3.0.48",
+    "@ai-sdk/react": "^3.0.140",
     "@midday/app-store": "workspace:*",
+    "@midday/connectors": "workspace:*",
     "@midday/ui": "workspace:*",
-    "@openpanel/nextjs": "^1.1.3",
+    "@openpanel/nextjs": "^1.4.0",
     "@openstatus/react": "^0.0.3",
     "@upstash/ratelimit": "^2.0.8",
-    "@upstash/redis": "^1.36.1",
-    "ai": "^6.0.41",
+    "@upstash/redis": "^1.37.0",
+    "ai": "^6.0.138",
+    "geist": "^1.7.0",
     "hls.js": "^1.6.15",
-    "motion": "^12.27.1",
-    "next": "16.1.5",
-    "next-mdx-remote": "^5.0.0",
-    "nuqs": "^2.8.6",
+    "motion": "^12.38.0",
+    "next": "16.2.1",
+    "next-mdx-remote": "^6.0.0",
+    "nuqs": "^2.8.9",
     "react": "catalog:",
     "react-dom": "catalog:",
     "remark-gfm": "^4.0.1",
-    "streamdown": "^2.1.0",
-    "sugar-high": "^0.9.5"
+    "streamdown": "2.5.0",
+    "sugar-high": "^1.0.0"
   },
   "devDependencies": {
     "@midday/tsconfig": "workspace:*",
-    "@types/node": "^24.10.1",
-    "@types/react": "^19.2.13"
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14"
   }
 }

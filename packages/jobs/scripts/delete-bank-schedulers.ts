@@ -26,7 +26,7 @@ async function getBankSchedulers(): Promise<SchedulerInfo[]> {
       perPage: 200,
     });
 
-    if (!schedulesPage || !schedulesPage.data) {
+    if (!schedulesPage?.data) {
       break;
     }
 
@@ -167,5 +167,5 @@ if (require.main === module) {
   main();
 }
 
-export { deleteBankSchedulers, getBankSchedulers };
 export type { SchedulerInfo };
+export { deleteBankSchedulers, getBankSchedulers };

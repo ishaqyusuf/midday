@@ -1,37 +1,23 @@
 "use client";
 
-import { useDataPart } from "@ai-sdk-tools/store";
 import { AnimatePresence, motion } from "framer-motion";
-
-interface ChatTitleData {
-  chatId: string;
-  title: string;
-}
+import { useChatState } from "@/components/chat/chat-context";
 
 export function ChatTitle() {
-  const [chatTitle] = useDataPart<ChatTitleData>("chat-title", {
-    onData: (dataPart) => {
-      if (dataPart.data.title) {
-        document.title = `${dataPart.data.title} - AI SDK Tools`;
-      }
-    },
-  });
+  const { chatTitle } = useChatState();
 
   return (
     <AnimatePresence mode="wait">
-      {chatTitle?.title && (
-        <motion.div
-          key={chatTitle.title}
+      {chatTitle && (
+        <motion.span
+          key={chatTitle}
           initial={{ width: 0, opacity: 0 }}
           animate={{ width: "auto", opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
-          transition={{ duration: 0.2, ease: "easeOut" }}
-          className="overflow-hidden"
+          transition={{ duration: 0.3, ease: [0.25, 0.1, 0.25, 1] }}
+          className="text-sm text-primary truncate max-w-[300px] overflow-hidden whitespace-nowrap inline-block"
         >
-          <div className="text-xs font-medium text-foreground whitespace-nowrap">
-            {chatTitle.title}
-          </div>
-        </motion.div>
+          {chatTitle}
+        </motion.span>
       )}
     </AnimatePresence>
   );

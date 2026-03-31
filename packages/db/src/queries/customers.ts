@@ -7,13 +7,13 @@ import type { Database } from "../client";
 import {
   customers,
   customerTags,
-  exchangeRates,
   invoices,
   tags,
   teams,
   trackerProjects,
 } from "../schema";
 import { createActivity } from "./activities";
+import { getExchangeRatesBatch } from "./exhange-rates";
 
 type GetCustomerByIdParams = {
   id: string;
@@ -189,14 +189,15 @@ export const getCustomers = async (
       primaryLanguage: customers.primaryLanguage,
       fiscalYearEnd: customers.fiscalYearEnd,
       enrichmentStatus: customers.enrichmentStatus,
+      enrichedAt: customers.enrichedAt,
       // Portal fields
       portalEnabled: customers.portalEnabled,
       portalId: customers.portalId,
       invoiceCount: sql<number>`cast(count(${invoices.id}) as int)`,
       projectCount: sql<number>`cast(count(${trackerProjects.id}) as int)`,
-      // Financial metrics
-      totalRevenue: sql<number>`coalesce(sum(case when ${invoices.status} = 'paid' then ${invoices.amount} else 0 end), 0)`,
-      outstandingAmount: sql<number>`coalesce(sum(case when ${invoices.status} in ('unpaid', 'overdue') then ${invoices.amount} else 0 end), 0)`,
+      // Financial metrics (cast to float so the PG driver returns a JS number, not a string)
+      totalRevenue: sql<number>`cast(coalesce(sum(case when ${invoices.status} = 'paid' then ${invoices.amount} else 0 end), 0) as float)`,
+      outstandingAmount: sql<number>`cast(coalesce(sum(case when ${invoices.status} in ('unpaid', 'overdue') then ${invoices.amount} else 0 end), 0) as float)`,
       lastInvoiceDate: sql<string | null>`max(${invoices.issueDate})`,
       invoiceCurrency: sql<
         string | null
@@ -481,6 +482,30 @@ export const upsertCustomer = async (
       countryCode: customers.countryCode,
       token: customers.token,
       contact: customers.contact,
+      // Enrichment fields
+      logoUrl: customers.logoUrl,
+      description: customers.description,
+      industry: customers.industry,
+      companyType: customers.companyType,
+      employeeCount: customers.employeeCount,
+      foundedYear: customers.foundedYear,
+      estimatedRevenue: customers.estimatedRevenue,
+      fundingStage: customers.fundingStage,
+      totalFunding: customers.totalFunding,
+      headquartersLocation: customers.headquartersLocation,
+      timezone: customers.timezone,
+      linkedinUrl: customers.linkedinUrl,
+      twitterUrl: customers.twitterUrl,
+      instagramUrl: customers.instagramUrl,
+      facebookUrl: customers.facebookUrl,
+      ceoName: customers.ceoName,
+      financeContact: customers.financeContact,
+      financeContactEmail: customers.financeContactEmail,
+      primaryLanguage: customers.primaryLanguage,
+      fiscalYearEnd: customers.fiscalYearEnd,
+      enrichmentStatus: customers.enrichmentStatus,
+      enrichedAt: customers.enrichedAt,
+      // Portal fields
       portalEnabled: customers.portalEnabled,
       portalId: customers.portalId,
       invoiceCount: sql<number>`cast(count(${invoices.id}) as int)`,
@@ -546,26 +571,25 @@ export async function getCustomerInvoiceSummary(
 ) {
   const { customerId, teamId } = params;
 
-  // Get team's base currency first
-  const [team] = await db
-    .select({ baseCurrency: teams.baseCurrency })
-    .from(teams)
-    .where(eq(teams.id, teamId))
-    .limit(1);
+  const [[team], invoiceData] = await Promise.all([
+    db
+      .select({ baseCurrency: teams.baseCurrency })
+      .from(teams)
+      .where(eq(teams.id, teamId))
+      .limit(1),
+    db
+      .select({
+        amount: invoices.amount,
+        currency: invoices.currency,
+        status: invoices.status,
+      })
+      .from(invoices)
+      .where(
+        and(eq(invoices.customerId, customerId), eq(invoices.teamId, teamId)),
+      ),
+  ]);
 
   const baseCurrency = team?.baseCurrency || "USD";
-
-  // Get all invoices for this customer
-  const invoiceData = await db
-    .select({
-      amount: invoices.amount,
-      currency: invoices.currency,
-      status: invoices.status,
-    })
-    .from(invoices)
-    .where(
-      and(eq(invoices.customerId, customerId), eq(invoices.teamId, teamId)),
-    );
 
   if (invoiceData.length === 0) {
     return {
@@ -586,27 +610,16 @@ export async function getCustomerInvoiceSummary(
     ),
   ];
 
-  // Fetch all exchange rates
   const exchangeRateMap = new Map<string, number>();
   if (currenciesToConvert.length > 0) {
-    const exchangeRatesData = await db
-      .select({
-        base: exchangeRates.base,
-        rate: exchangeRates.rate,
-      })
-      .from(exchangeRates)
-      .where(
-        and(
-          inArray(exchangeRates.base, currenciesToConvert),
-          eq(exchangeRates.target, baseCurrency),
-        ),
-      );
-
-    // Build a map for O(1) lookup
-    for (const rateData of exchangeRatesData) {
-      if (rateData.base && rateData.rate) {
-        exchangeRateMap.set(rateData.base, Number(rateData.rate));
-      }
+    const pairs = currenciesToConvert.map((c) => ({
+      base: c,
+      target: baseCurrency,
+    }));
+    const batchRates = await getExchangeRatesBatch(db, { pairs });
+    for (const [key, rate] of batchRates) {
+      const base = key.split(":")[0];
+      if (base) exchangeRateMap.set(base, rate);
     }
   }
 
@@ -667,7 +680,7 @@ export type ToggleCustomerPortalParams = {
 
 /**
  * Toggle customer portal access.
- * Generates a portal_id (nanoid(8)) on first enable.
+ * Generates a portal_id (nanoid(21)) on first enable.
  */
 export async function toggleCustomerPortal(
   db: Database,
@@ -691,7 +704,9 @@ export async function toggleCustomerPortal(
 
   // Generate portal_id if enabling and doesn't exist yet
   const portalId =
-    enabled && !currentCustomer.portalId ? nanoid(8) : currentCustomer.portalId;
+    enabled && !currentCustomer.portalId
+      ? nanoid(21)
+      : currentCustomer.portalId;
 
   // Update the customer
   const [result] = await db

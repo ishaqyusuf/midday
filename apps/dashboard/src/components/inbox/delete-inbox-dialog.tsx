@@ -1,5 +1,6 @@
 "use client";
 
+import { LogEvents } from "@midday/events/events";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -10,6 +11,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@midday/ui/alert-dialog";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -34,13 +36,14 @@ export function DeleteInboxDialog({
 }: Props) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const { track } = useOpenPanel();
   const router = useRouter();
   const { setParams, params } = useInboxParams();
   const { params: filter } = useInboxFilterParams();
   const [isDeleting, setIsDeleting] = useState(false);
 
   // Check if inbox item has transaction attachments
-  const { data: attachmentData, isLoading: isCheckingAttachments } = useQuery(
+  const { data: attachmentData } = useQuery(
     trpc.inbox.checkAttachments.queryOptions(
       { id },
       {
@@ -162,6 +165,7 @@ export function DeleteInboxDialog({
   );
 
   const handleDelete = () => {
+    track(LogEvents.InboxItemDeleted.name);
     deleteInboxMutation.mutate({ id });
   };
 

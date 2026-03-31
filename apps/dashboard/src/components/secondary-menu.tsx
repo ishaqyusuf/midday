@@ -23,7 +23,7 @@ export function SecondaryMenu({ items }: Props) {
           <Link
             key={item.path}
             href={item.path}
-            prefetch={false}
+            prefetch
             className={cn(
               "text-[#606060]",
               pathname === item.path &&

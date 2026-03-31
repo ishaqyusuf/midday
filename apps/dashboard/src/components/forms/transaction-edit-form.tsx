@@ -59,7 +59,7 @@ export function TransactionEditForm({ transaction }: Props) {
   const updateTransactionMutation = useMutation(
     trpc.transactions.update.mutationOptions({
       onSuccess: (_, variables) => {
-        // If category or internal (exclude from reports) changed, invalidate reports and widgets
+        // If category or internal (exclude from reports) changed, invalidate reports
         if ("categorySlug" in variables || "internal" in variables) {
           invalidateTransactionQueries();
         } else {
@@ -522,10 +522,6 @@ export function TransactionEditForm({ transaction }: Props) {
               <TransactionAttachments
                 id={transaction.id}
                 data={transaction.attachments}
-                onUpload={(_files) => {
-                  // Note: Attachments are handled by TransactionAttachments component
-                  // The component manages its own state and updates the transaction
-                }}
               />
             </div>
           </AccordionContent>

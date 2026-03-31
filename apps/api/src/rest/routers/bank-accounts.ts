@@ -10,6 +10,7 @@ import {
 } from "@api/schemas/bank-accounts";
 import { validateResponse } from "@api/utils/validate-response";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
+
 import {
   createBankAccount,
   deleteBankAccount,
@@ -115,6 +116,7 @@ app.openapi(
     tags: ["Bank Accounts"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: createBankAccountSchema,
@@ -162,6 +164,7 @@ app.openapi(
     request: {
       params: deleteBankAccountSchema,
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: updateBankAccountSchema,

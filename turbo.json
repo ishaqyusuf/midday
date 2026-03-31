@@ -19,20 +19,17 @@
         "lib/**"
       ],
       "passThroughEnv": [
-        "SUPABASE_SERVICE_KEY",
+        "SUPABASE_SECRET_KEY",
         "RESEND_API_KEY",
         "RESEND_AUDIENCE_ID",
         "GOCARDLESS_SECRET_ID",
         "GOCARDLESS_SECRET_KEY",
-        "UPSTASH_REDIS_REST_URL",
-        "UPSTASH_REDIS_REST_TOKEN",
         "POLAR_WEBHOOK_SECRET",
         "POLAR_ACCESS_TOKEN",
         "POLAR_ENVIRONMENT",
         "FILE_KEY_SECRET",
         "TELLER_CERTIFICATE",
         "TELLER_CERTIFICATE_PRIVATE_KEY",
-        "ENGINE_API_KEY",
         "PLAID_CLIENT_ID",
         "PLAID_SECRET",
         "GITHUB_TOKEN",
@@ -58,14 +55,17 @@
         "SENTRY_AUTH_TOKEN",
         "SENTRY_ORG",
         "SENTRY_PROJECT",
-        "NEXT_PUBLIC_SENTRY_DSN"
+        "SENTRY_RELEASE",
+        "NEXT_PUBLIC_SENTRY_DSN",
+        "GIT_COMMIT_SHA"
       ]
     },
     "start": {
       "cache": false
     },
     "test": {
-      "cache": false
+      "cache": false,
+      "env": ["TEST_DATABASE_URL"]
     },
     "dev": {
       "inputs": ["$TURBO_DEFAULT$", ".env"],
@@ -79,6 +79,10 @@
     "format": {},
     "lint": {
       "dependsOn": ["^topo"]
+    },
+    "lint:fix": {
+      "dependsOn": ["^topo"],
+      "cache": false
     },
     "typecheck": {
       "outputs": []

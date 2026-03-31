@@ -6,16 +6,17 @@
   "scripts": {
     "clean": "rm -rf .turbo node_modules",
     "lint": "biome check .",
-    "format": "biome format --write .",
+    "lint:fix": "biome check --write .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@slack/bolt": "^4.6.0",
-    "@slack/web-api": "^7.13.0",
+    "@slack/web-api": "^7.15.0",
+    "@supabase/supabase-js": "^2.100.0",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "^24.10.1",
+    "@types/node": "^25.5.0",
     "typescript": "catalog:"
   },
   "exports": {

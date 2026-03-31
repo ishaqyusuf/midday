@@ -6,10 +6,6 @@ export const updateUserSchema = z.object({
     description: "Full name of the user. Must be between 2 and 32 characters",
     example: "Jane Doe",
   }),
-  teamId: z.string().optional().openapi({
-    description: "Unique identifier of the team the user belongs to",
-    example: "team-abc123",
-  }),
   email: z.string().email().optional().openapi({
     description: "Email address of the user",
     example: "jane.doe@acme.com",
@@ -125,6 +121,7 @@ export const userSchema = z.object({
         "MMSlashddSlashyyyy",
         "yyyyDashMMDashdd",
         "ddDotMMDotyyyy",
+        "null",
       ],
     }),
   fileKey: z.string().nullable().openapi({
@@ -143,7 +140,7 @@ export const userSchema = z.object({
         description: "Name of the team or organization",
         example: "Acme Corporation",
       }),
-      logoUrl: z.string().url().openapi({
+      logoUrl: z.string().url().nullable().openapi({
         description: "URL to the team's logo image",
         example: "https://cdn.midday.ai/logos/acme-corp.png",
       }),

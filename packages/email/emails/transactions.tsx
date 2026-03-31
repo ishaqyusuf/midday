@@ -181,11 +181,11 @@ export const TransactionsEmail = ({
         >
           <Logo />
           <Heading
-            className={`text-[21px] font-normal text-center p-0 my-[30px] mx-0 ${themeClasses.heading}`}
+            className={`font-serif text-[21px] font-normal text-center p-0 my-[30px] mx-0 ${themeClasses.heading}`}
             style={{ color: lightStyles.text.color }}
           >
             {t("transactions.title1")}
-            <span className="font-semibold">
+            <span className="font-serif">
               {t("transactions.title2", {
                 numberOfTransactions: transactions.length,
               })}{" "}

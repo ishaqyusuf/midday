@@ -25,7 +25,7 @@ const donutTooltipFormatter = ({
   currency = "USD",
   locale,
 }: any) => {
-  if (active && payload && payload.length) {
+  if (active && payload?.length) {
     const data = payload[0].payload;
     return (
       <div className="border p-2 text-[10px] bg-white dark:bg-[#0c0c0c] border-[#e6e6e6] dark:border-[#1d1d1d] text-black dark:text-white shadow-sm">
@@ -84,7 +84,7 @@ export function CategoryExpenseDonutChart({
           className="absolute inset-0 dark:hidden"
           style={{
             backgroundImage:
-              "radial-gradient(circle, rgba(0,0,0,0.03) 1px, transparent 1px)",
+              "radial-gradient(circle, rgba(0,0,0,0.08) 1px, transparent 1px)",
             backgroundSize: "12px 12px",
           }}
         />

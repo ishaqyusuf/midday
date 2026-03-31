@@ -81,9 +81,16 @@ export const invoiceRouter = createTRPCRouter({
   getInvoiceByToken: publicProcedure
     .input(getInvoiceByTokenSchema)
     .query(async ({ input, ctx: { db } }) => {
-      const { id } = (await verify(decodeURIComponent(input.token))) as {
-        id: string;
-      };
+      let id: string | undefined;
+
+      try {
+        const payload = (await verify(decodeURIComponent(input.token))) as {
+          id?: string;
+        };
+        id = payload.id;
+      } catch {
+        throw new TRPCError({ code: "NOT_FOUND" });
+      }
 
       if (!id) {
         throw new TRPCError({ code: "NOT_FOUND" });
@@ -188,7 +195,7 @@ export const invoiceRouter = createTRPCRouter({
                 teamId: teamId!,
               })
             : null,
-          getUserById(db, session?.user.id!),
+          getUserById(db, session.user.id),
         ]);
 
       const invoiceId = uuidv4();
@@ -232,7 +239,7 @@ export const invoiceRouter = createTRPCRouter({
       const invoiceData = {
         id: invoiceId,
         teamId: teamId!,
-        userId: session?.user.id!,
+        userId: session.user.id,
         customerId: projectData.customerId,
         customerName: fullCustomer?.name,
         invoiceNumber: nextInvoiceNumber,
@@ -276,7 +283,7 @@ export const invoiceRouter = createTRPCRouter({
         getNextInvoiceNumber(db, teamId!),
         getInvoiceTemplate(db, teamId!),
         getTeamById(db, teamId!),
-        getUserById(db, session?.user.id!),
+        getUserById(db, session.user.id),
       ]);
 
       const locale = user?.locale ?? geo?.locale ?? "en";
@@ -430,7 +437,7 @@ export const invoiceRouter = createTRPCRouter({
         ...input,
         invoiceNumber,
         teamId: teamId!,
-        userId: session?.user.id!,
+        userId: session.user.id,
         paymentDetails: parseInputValue(input.paymentDetails),
         fromDetails: parseInputValue(input.fromDetails),
         customerDetails: parseInputValue(input.customerDetails),
@@ -626,7 +633,7 @@ export const invoiceRouter = createTRPCRouter({
 
       return duplicateInvoice(db, {
         id: input.id,
-        userId: session?.user.id!,
+        userId: session.user.id,
         invoiceNumber: nextInvoiceNumber!,
         teamId: teamId!,
       });
@@ -641,7 +648,7 @@ export const invoiceRouter = createTRPCRouter({
         teamId: teamId!,
       });
 
-      if (!invoice || !invoice.scheduledJobId) {
+      if (!invoice?.scheduledJobId) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Scheduled invoice not found",

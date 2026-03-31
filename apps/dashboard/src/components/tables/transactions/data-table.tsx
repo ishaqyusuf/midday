@@ -42,7 +42,7 @@ import {
 } from "@/store/transactions";
 import { useTRPC } from "@/trpc/client";
 import { STICKY_COLUMNS } from "@/utils/table-configs";
-import type { TableSettings } from "@/utils/table-settings";
+import { getColumnIds, type TableSettings } from "@/utils/table-settings";
 import { BulkEditBar } from "./bulk-edit-bar";
 import { columns } from "./columns";
 import { DataTableHeader } from "./data-table-header";
@@ -58,6 +58,8 @@ const NON_CLICKABLE_COLUMNS = new Set([
   "assigned",
   "tags",
 ]);
+
+const COLUMN_IDS = getColumnIds(columns);
 
 type Props = {
   initialSettings?: Partial<TableSettings>;
@@ -75,6 +77,7 @@ export function DataTable({ initialSettings, initialTab }: Props) {
     rowSelectionByTab,
     setColumns,
     setCanDelete,
+    setTransactionIds,
     lastClickedIndex,
     setLastClickedIndex,
   } = useTransactionsStore();
@@ -98,6 +101,7 @@ export function DataTable({ initialSettings, initialTab }: Props) {
   } = useTableSettings({
     tableId: "transactions",
     initialSettings,
+    columnIds: COLUMN_IDS,
   });
 
   // Use the current tab from URL, falling back to initial value
@@ -114,13 +118,11 @@ export function DataTable({ initialSettings, initialTab }: Props) {
   );
 
   // Build query filters based on active tab
-  // Review tab: show fulfilled transactions (has attachments OR completed) that are not yet exported
+  // Review tab: strict export queue (ignore user filters)
   const queryFilter = useMemo(() => {
     if (isReviewTab) {
       return {
-        ...filter,
-        amountRange: filter.amount_range ?? null,
-        q: deferredSearch,
+        // Keep sort only; all filter state is ignored in Review.
         sort: params.sort,
         // Fulfilled = has attachments OR status=completed
         fulfilled: true,
@@ -246,6 +248,10 @@ export function DataTable({ initialSettings, initialTab }: Props) {
     return tableData.map((row) => row?.id);
   }, [tableData]);
 
+  useEffect(() => {
+    setTransactionIds(ids);
+  }, [ids, setTransactionIds]);
+
   // Handle shift-click range selection
   // Note: This function will be updated after table creation to use table.getRowModel().rows
   const handleShiftClickRangeRef = useRef<
@@ -360,6 +366,7 @@ export function DataTable({ initialSettings, initialTab }: Props) {
   // Memoize the meta object to prevent table re-renders
   const tableMeta = useMemo(
     () => ({
+      dateFormat: user?.dateFormat,
       setOpen,
       copyUrl,
       updateTransaction,
@@ -372,6 +379,7 @@ export function DataTable({ initialSettings, initialTab }: Props) {
       exportingTransactionIds,
     }),
     [
+      user?.dateFormat,
       setOpen,
       copyUrl,
       updateTransaction,
@@ -514,19 +522,19 @@ export function DataTable({ initialSettings, initialTab }: Props) {
   useHotkeys(
     "ArrowUp, ArrowDown",
     ({ key }) => {
-      if (key === "ArrowUp" && transactionId) {
-        const currentIndex = ids?.indexOf(transactionId) ?? 0;
-        const prevId = ids[currentIndex - 1];
+      if (!transactionId) return;
+      const currentIndex = ids?.indexOf(transactionId) ?? -1;
+      if (currentIndex === -1) return;
 
+      if (key === "ArrowUp") {
+        const prevId = ids[currentIndex - 1];
         if (prevId) {
           setParams({ transactionId: prevId });
         }
       }
 
-      if (key === "ArrowDown" && transactionId) {
-        const currentIndex = ids?.indexOf(transactionId) ?? 0;
+      if (key === "ArrowDown") {
         const nextId = ids[currentIndex + 1];
-
         if (nextId) {
           setParams({ transactionId: nextId });
         }

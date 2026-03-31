@@ -48,19 +48,19 @@ Defined in `packages/db/src/client.ts`:
 
 | Setting | Development | Production |
 |---------|-------------|------------|
-| `max` | 8 | 12 |
+| `max` | 8 | 40 |
 | `idleTimeoutMillis` | 5,000ms | 60,000ms |
 | `connectionTimeoutMillis` | 5,000ms | 5,000ms |
 | `maxUses` | 100 | 0 (unlimited) |
 | `ssl` | disabled | enabled (rejectUnauthorized: false) |
 
-Each API instance creates up to 2 pools (primary + 1 regional replica), so the maximum backend connections per instance is `12 × 2 = 24`. With Supavisor transaction mode, these are multiplexed into a much smaller number of actual Postgres backend connections.
+Each API instance creates up to 2 pools (primary + 1 regional replica), so the maximum client connections per instance is `40 × 2 = 80`. With Supavisor transaction mode, these are multiplexed into a much smaller number of actual Postgres backend connections. Pool sizes are tuned for PgBouncer's 600 client limit across API + worker instances.
 
 ## Prepared Statements
 
-Transaction mode does **not** support named prepared statements. The `node-postgres` (`pg`) package with Drizzle ORM uses unnamed parameterized queries (extended query protocol without a `name` field), which are compatible with transaction mode. No special configuration is needed.
+We use **pg** (node-postgres) for all database clients. Transaction mode (port 6543) does **not** support prepared statements — use **session pooler** (port 5432) or **direct connection** for pg compatibility.
 
-**Do not** add named queries like `pool.query({ name: 'my-query', text: '...' })` — these will fail through the pooler.
+See [Supabase: Disabling prepared statements](https://github.com/orgs/supabase/discussions/28239).
 
 ## Environment Variables
 

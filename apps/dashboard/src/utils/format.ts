@@ -40,12 +40,21 @@ export function formatAmount({
     return;
   }
 
-  // Normalize currency code to ISO 4217 format
-  const normalizedCurrency = normalizeCurrencyCode(currency);
-
-  // Fix: locale can be null, but Intl.NumberFormat expects string | string[] | undefined
-  // So, if locale is null, pass undefined instead
+  const safeAmount = Number.isFinite(amount) ? amount : 0;
   const safeLocale = locale ?? undefined;
+
+  const formatDecimal = () =>
+    Intl.NumberFormat(safeLocale, {
+      style: "decimal",
+      minimumFractionDigits: minimumFractionDigits ?? 2,
+      maximumFractionDigits: maximumFractionDigits ?? 2,
+    }).format(safeAmount);
+
+  if (currency.toUpperCase() === "XXX") {
+    return formatDecimal();
+  }
+
+  const normalizedCurrency = normalizeCurrencyCode(currency);
 
   try {
     return Intl.NumberFormat(safeLocale, {
@@ -53,19 +62,9 @@ export function formatAmount({
       currency: normalizedCurrency,
       minimumFractionDigits,
       maximumFractionDigits,
-    }).format(amount);
-  } catch (error) {
-    // Fallback to USD if currency is invalid
-    console.warn(
-      `Invalid currency code: ${currency} (normalized to ${normalizedCurrency}), falling back to USD`,
-      error,
-    );
-    return Intl.NumberFormat(safeLocale, {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits,
-      maximumFractionDigits,
-    }).format(amount);
+    }).format(safeAmount);
+  } catch {
+    return formatDecimal();
   }
 }
 

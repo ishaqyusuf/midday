@@ -5,16 +5,18 @@ import { apiKeysRouter } from "./api-keys";
 import { appsRouter } from "./apps";
 import { bankAccountsRouter } from "./bank-accounts";
 import { bankConnectionsRouter } from "./bank-connections";
+import { bankingRouter } from "./banking";
 import { billingRouter } from "./billing";
-import { chatsRouter } from "./chats";
+
+import { connectorsRouter } from "./connectors";
 import { customersRouter } from "./customers";
 import { documentTagAssignmentsRouter } from "./document-tag-assignments";
 import { documentTagsRouter } from "./document-tags";
 import { documentsRouter } from "./documents";
-import { chatFeedbackRouter } from "./feedback";
+
 import { inboxRouter } from "./inbox";
 import { inboxAccountsRouter } from "./inbox-accounts";
-import { insightsRouter } from "./insights";
+
 import { institutionsRouter } from "./institutions";
 import { invoiceRouter } from "./invoice";
 import { invoicePaymentsRouter } from "./invoice-payments";
@@ -25,10 +27,11 @@ import { jobsRouter } from "./jobs";
 import { notificationSettingsRouter } from "./notification-settings";
 import { notificationsRouter } from "./notifications";
 import { oauthApplicationsRouter } from "./oauth-applications";
+import { overviewRouter } from "./overview";
 import { reportsRouter } from "./reports";
 import { searchRouter } from "./search";
 import { shortLinksRouter } from "./short-links";
-import { suggestedActionsRouter } from "./suggested-actions";
+
 import { tagsRouter } from "./tags";
 import { teamRouter } from "./team";
 import { trackerEntriesRouter } from "./tracker-entries";
@@ -38,24 +41,25 @@ import { transactionCategoriesRouter } from "./transaction-categories";
 import { transactionTagsRouter } from "./transaction-tags";
 import { transactionsRouter } from "./transactions";
 import { userRouter } from "./user";
-import { widgetsRouter } from "./widgets";
 
 export const appRouter = createTRPCRouter({
   accounting: accountingRouter,
+  banking: bankingRouter,
   notifications: notificationsRouter,
   notificationSettings: notificationSettingsRouter,
   apps: appsRouter,
   bankAccounts: bankAccountsRouter,
   bankConnections: bankConnectionsRouter,
-  chats: chatsRouter,
+
+  connectors: connectorsRouter,
   customers: customersRouter,
   documents: documentsRouter,
   documentTagAssignments: documentTagAssignmentsRouter,
   documentTags: documentTagsRouter,
-  chatFeedback: chatFeedbackRouter,
+
   inbox: inboxRouter,
   inboxAccounts: inboxAccountsRouter,
-  insights: insightsRouter,
+
   institutions: institutionsRouter,
   invoice: invoiceRouter,
   invoicePayments: invoicePaymentsRouter,
@@ -63,10 +67,11 @@ export const appRouter = createTRPCRouter({
   invoiceRecurring: invoiceRecurringRouter,
   invoiceTemplate: invoiceTemplateRouter,
   jobs: jobsRouter,
+  overview: overviewRouter,
   reports: reportsRouter,
   oauthApplications: oauthApplicationsRouter,
   billing: billingRouter,
-  suggestedActions: suggestedActionsRouter,
+
   tags: tagsRouter,
   team: teamRouter,
   trackerEntries: trackerEntriesRouter,
@@ -79,7 +84,6 @@ export const appRouter = createTRPCRouter({
   search: searchRouter,
   shortLinks: shortLinksRouter,
   apiKeys: apiKeysRouter,
-  widgets: widgetsRouter,
 });
 
 // export type definition of API

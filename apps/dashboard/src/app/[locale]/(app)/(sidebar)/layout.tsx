@@ -27,20 +27,30 @@ export default async function Layout({
     trpc.search.global.queryOptions({ searchTerm: "" }),
   ]);
 
-  // NOTE: Right now we want to fetch the user and hydrate the client
-  // Next steps would be to prefetch and suspense
-  const user = await queryClient.fetchQuery(trpc.user.me.queryOptions());
+  // Fetch the user – .catch → redirect so a transient API failure
+  // (timeout, 5xx, expired session, etc.) doesn't crash the entire
+  // layout and blank the page.
+  const user = await queryClient
+    .fetchQuery(trpc.user.me.queryOptions())
+    .catch(() => redirect("/login"));
 
   if (!user) {
     redirect("/login");
   }
 
-  if (!user.fullName) {
-    redirect("/setup");
+  if (!user.fullName || !user.teamId) {
+    redirect("/onboarding");
   }
 
-  if (!user.teamId) {
-    redirect("/teams");
+  // New teams created after this date must complete onboarding (incl. plan
+  // selection) before accessing the dashboard. Existing teams are unaffected.
+  const ONBOARDING_ENFORCEMENT_DATE = "2026-03-24T00:00:00.000Z";
+  if (
+    user.team?.plan === "trial" &&
+    user.team?.createdAt &&
+    new Date(user.team.createdAt) >= new Date(ONBOARDING_ENFORCEMENT_DATE)
+  ) {
+    redirect("/onboarding?s=start-trial");
   }
 
   return (
@@ -50,11 +60,7 @@ export default async function Layout({
 
         <div className="md:ml-[70px] pb-4">
           <Header />
-          <TrialGuard
-            plan={user.team?.plan}
-            createdAt={user.team?.createdAt}
-            user={{ fullName: user.fullName }}
-          >
+          <TrialGuard plan={user.team?.plan} createdAt={user.team?.createdAt}>
             <div className="px-4 md:px-8">{children}</div>
           </TrialGuard>
         </div>

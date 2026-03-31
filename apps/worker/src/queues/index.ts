@@ -6,12 +6,12 @@ import { customersQueue } from "./customers";
 import { customersQueueConfig } from "./customers.config";
 import { documentsQueue } from "./documents";
 import { documentsQueueConfig } from "./documents.config";
-import { embeddingsQueue } from "./embeddings";
-import { embeddingsQueueConfig } from "./embeddings.config";
 import { inboxProviderQueue, inboxQueue } from "./inbox";
 import { inboxProviderQueueConfig, inboxQueueConfig } from "./inbox.config";
 import { insightsQueue } from "./insights";
 import { insightsQueueConfig } from "./insights.config";
+import { institutionsQueue } from "./institutions";
+import { institutionsQueueConfig } from "./institutions.config";
 import { invoicesQueue } from "./invoices";
 import { invoicesQueueConfig } from "./invoices.config";
 import { notificationsQueue } from "./notifications";
@@ -32,8 +32,8 @@ export const queueConfigs: QueueConfig[] = [
   inboxProviderQueueConfig,
   transactionsQueueConfig,
   documentsQueueConfig,
-  embeddingsQueueConfig,
   ratesQueueConfig,
+  institutionsQueueConfig,
   accountingQueueConfig,
   invoicesQueueConfig,
   customersQueueConfig,
@@ -52,8 +52,8 @@ export function getAllQueues(): Queue[] {
     inboxProviderQueue,
     transactionsQueue,
     documentsQueue,
-    embeddingsQueue,
     ratesQueue,
+    institutionsQueue,
     accountingQueue,
     invoicesQueue,
     customersQueue,

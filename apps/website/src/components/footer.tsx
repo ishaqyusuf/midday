@@ -30,14 +30,14 @@ export function Footer() {
               </h3>
               <div className="space-y-2.5">
                 {[
-                  { href: "/assistant", label: "Assistant" },
-                  { href: "/insights", label: "Insights" },
+                  { href: "/invoicing", label: "Invoicing" },
                   { href: "/transactions", label: "Transactions" },
                   { href: "/inbox", label: "Inbox" },
                   { href: "/time-tracking", label: "Time tracking" },
-                  { href: "/invoicing", label: "Invoicing" },
                   { href: "/customers", label: "Customers" },
                   { href: "/file-storage", label: "Files" },
+                  { href: "/pre-accounting", label: "Exports" },
+                  { href: "/assistant", label: "Assistant" },
                 ].map((item) => (
                   <Link
                     key={item.href}
@@ -62,42 +62,6 @@ export function Footer() {
                   { href: "/pre-accounting", label: "Pre-accounting" },
                   { href: "/integrations", label: "Apps & Integrations" },
                   { href: "/testimonials", label: "Customer Stories" },
-                ].map((item) => (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className="font-sans text-sm text-muted-foreground hover:text-foreground transition-colors block"
-                  >
-                    {item.label}
-                  </Link>
-                ))}
-              </div>
-            </div>
-
-            {/* Compare Column */}
-            <div className="space-y-3 hidden md:block">
-              <h3 className="font-sans text-sm text-foreground mb-4">
-                Compare
-              </h3>
-              <div className="space-y-2.5">
-                {[
-                  {
-                    href: "/compare/quickbooks-alternative",
-                    label: "vs QuickBooks",
-                  },
-                  {
-                    href: "/compare/xero-alternative",
-                    label: "vs Xero",
-                  },
-                  {
-                    href: "/compare/freshbooks-alternative",
-                    label: "vs FreshBooks",
-                  },
-                  { href: "/compare/wave-alternative", label: "vs Wave" },
-                  { href: "/compare/bench-alternative", label: "vs Bench" },
-                  { href: "/compare/qonto-alternative", label: "vs Qonto" },
-                  { href: "/compare/pleo-alternative", label: "vs Pleo" },
-                  { href: "/compare", label: "View all" },
                 ].map((item) => (
                   <Link
                     key={item.href}
@@ -151,6 +115,7 @@ export function Footer() {
               <div className="space-y-2.5">
                 {[
                   { href: "/docs", label: "Documentation", external: false },
+                  { href: "/agents", label: "Agents", external: false },
                   {
                     href: "https://api.midday.ai",
                     label: "API",
@@ -186,7 +151,7 @@ export function Footer() {
           {/* Right Column - Tagline & Compliance */}
           <div className="flex flex-col items-start lg:items-end gap-6 lg:gap-10">
             <p className="font-sans text-base sm:text-xl text-foreground text-left lg:text-right">
-              Business finances that explain themselves.
+              Run your company. Not the admin.
             </p>
 
             {/* Compliance Section */}

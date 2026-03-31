@@ -8,10 +8,8 @@ import { resolveTaxValues } from "@midday/utils/tax";
 import {
   and,
   asc,
-  cosineDistance,
   desc,
   eq,
-  gt,
   gte,
   inArray,
   isNull,
@@ -33,13 +31,19 @@ import {
   tags,
   transactionAttachments,
   transactionCategories,
-  transactionEmbeddings,
   type transactionFrequencyEnum,
   transactionMatchSuggestions,
   transactions,
   transactionTags,
   users,
 } from "../schema";
+import {
+  calculateAmountScore,
+  calculateCurrencyScore,
+  calculateDateScore,
+  calculateNameScore,
+  scoreMatch,
+} from "../utils/transaction-matching";
 import { createActivity } from "./activities";
 import { type Attachment, createAttachments } from "./transaction-attachments";
 
@@ -51,7 +55,17 @@ export type GetTransactionsParams = {
   sort?: string[] | null;
   pageSize?: number;
   q?: string | null;
-  statuses?: string[] | null;
+  statuses?:
+    | (
+        | "blank"
+        | "receipt_match"
+        | "in_review"
+        | "export_error"
+        | "exported"
+        | "excluded"
+        | "archived"
+      )[]
+    | null;
   attachments?: "include" | "exclude" | null;
   categories?: string[] | null;
   tags?: string[] | null;
@@ -117,8 +131,8 @@ export async function getTransactions(
 
   // Search query filter (name, description, or amount)
   if (q) {
-    const numericQ = Number.parseFloat(q);
-    if (!Number.isNaN(numericQ)) {
+    const numericQ = Number(q);
+    if (!Number.isNaN(numericQ) && q.trim() !== "") {
       whereConditions.push(sql`${transactions.amount} = ${numericQ}`);
     } else {
       const searchQuery = buildSearchQuery(q);
@@ -131,43 +145,118 @@ export async function getTransactions(
     }
   }
 
-  // Status filtering - simplified logic using direct EXISTS subqueries
-  if (statuses?.includes("uncompleted") || attachments === "exclude") {
-    // Transaction is NOT fulfilled (no attachments AND status is not completed) AND status is not excluded
-    whereConditions.push(
-      sql`NOT (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed') AND ${transactions.status} != 'excluded'`,
-    );
-  } else if (statuses?.includes("completed") || attachments === "include") {
-    // Transaction is fulfilled (has attachments OR status is completed)
-    whereConditions.push(
-      sql`(EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`,
-    );
-  } else if (statuses?.includes("excluded")) {
-    whereConditions.push(eq(transactions.status, "excluded"));
-  } else if (statuses?.includes("archived")) {
-    whereConditions.push(eq(transactions.status, "archived"));
-  } else if (statuses?.includes("exported")) {
-    // Show all exported transactions: manually marked OR synced to accounting provider
-    whereConditions.push(
-      sql`(
-        ${transactions.status} = 'exported' OR EXISTS (
-          SELECT 1 FROM ${accountingSyncRecords}
-          WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
-          AND ${accountingSyncRecords.teamId} = ${teamId}
-          AND ${accountingSyncRecords.status} = 'synced'
-        )
-      )`,
-    );
+  const isFulfilledCondition = sql`(
+    EXISTS (
+      SELECT 1
+      FROM ${transactionAttachments}
+      WHERE ${eq(transactionAttachments.transactionId, transactions.id)}
+      AND ${eq(transactionAttachments.teamId, teamId)}
+    ) OR ${transactions.status} = 'completed'
+  )`;
+
+  const isExportedCondition = sql`(
+    ${transactions.status} = 'exported' OR EXISTS (
+      SELECT 1
+      FROM ${accountingSyncRecords}
+      WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+      AND ${accountingSyncRecords.teamId} = ${teamId}
+      AND ${accountingSyncRecords.status} = 'synced'
+    )
+  )`;
+
+  const hasExportErrorCondition = sql`EXISTS (
+    SELECT 1
+    FROM ${accountingSyncRecords}
+    WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+    AND ${accountingSyncRecords.teamId} = ${teamId}
+    AND ${accountingSyncRecords.status} IN ('failed', 'partial')
+  )`;
+
+  const hasPendingSuggestionCondition = sql`EXISTS (
+    SELECT 1
+    FROM ${transactionMatchSuggestions}
+    WHERE ${transactionMatchSuggestions.transactionId} = ${transactions.id}
+    AND ${transactionMatchSuggestions.teamId} = ${teamId}
+    AND ${transactionMatchSuggestions.status} = 'pending'
+  )`;
+
+  const isActiveWorkflowCondition = sql`${transactions.status} NOT IN ('excluded', 'archived')`;
+
+  if (attachments === "exclude") {
+    whereConditions.push(sql`NOT (${isFulfilledCondition})`);
+  } else if (attachments === "include") {
+    whereConditions.push(isFulfilledCondition);
+  }
+
+  // UI status filters map to computed states. DB status remains unchanged.
+  if (statuses && statuses.length > 0) {
+    const statusConditions: SQL[] = [];
+
+    if (statuses.includes("blank")) {
+      statusConditions.push(
+        sql`(
+          ${isActiveWorkflowCondition}
+          AND NOT (${isFulfilledCondition})
+          AND NOT (${isExportedCondition})
+          AND NOT (${hasExportErrorCondition})
+        )`,
+      );
+    }
+
+    if (statuses.includes("receipt_match")) {
+      statusConditions.push(
+        sql`(
+          ${isActiveWorkflowCondition}
+          AND ${hasPendingSuggestionCondition}
+          AND NOT (${isFulfilledCondition})
+          AND NOT (${isExportedCondition})
+        )`,
+      );
+    }
+
+    if (statuses.includes("in_review")) {
+      statusConditions.push(
+        sql`(
+          ${isActiveWorkflowCondition}
+          AND ${isFulfilledCondition}
+          AND NOT (${isExportedCondition})
+          AND NOT (${hasExportErrorCondition})
+        )`,
+      );
+    }
+
+    if (statuses.includes("export_error")) {
+      statusConditions.push(
+        sql`(
+          ${isActiveWorkflowCondition}
+          AND ${hasExportErrorCondition}
+          AND NOT (${isExportedCondition})
+        )`,
+      );
+    }
+
+    if (statuses.includes("exported")) {
+      statusConditions.push(isExportedCondition);
+    }
+
+    if (statuses.includes("excluded")) {
+      statusConditions.push(eq(transactions.status, "excluded"));
+    }
+
+    if (statuses.includes("archived")) {
+      statusConditions.push(eq(transactions.status, "archived"));
+    }
+
+    if (statusConditions.length > 0) {
+      whereConditions.push(or(...statusConditions));
+    } else {
+      // All values were unrecognized — fall back to default exclusion so
+      // archived/excluded transactions don't leak into results.
+      whereConditions.push(isActiveWorkflowCondition);
+    }
   } else {
-    // Default: pending, posted, completed, or exported (exclude archived/excluded)
-    whereConditions.push(
-      inArray(transactions.status, [
-        "pending",
-        "posted",
-        "completed",
-        "exported",
-      ]),
-    );
+    // Default All tab behavior: hide excluded/archived unless explicitly filtered.
+    whereConditions.push(isActiveWorkflowCondition);
   }
 
   // Categories filter with child category expansion
@@ -437,6 +526,8 @@ export async function getTransactions(
       taxRate: transactions.taxRate,
       taxType: transactions.taxType,
       taxAmount: transactions.taxAmount,
+      baseAmount: transactions.baseAmount,
+      baseCurrency: transactions.baseCurrency,
       enrichmentCompleted: transactions.enrichmentCompleted,
       isFulfilled:
         sql<boolean>`(EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`.as(
@@ -494,9 +585,11 @@ export async function getTransactions(
           type: string;
           size: number;
         }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${transactionAttachments.id}, 'filename', ${transactionAttachments.name}, 'path', ${transactionAttachments.path}, 'type', ${transactionAttachments.type}, 'size', ${transactionAttachments.size})) FILTER (WHERE ${transactionAttachments.id} IS NOT NULL), '[]'::json)`.as(
-        "attachments",
-      ),
+      >`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', ta.id, 'filename', ta.name, 'path', ta.path, 'type', ta.type, 'size', ta.size))
+        FROM ${transactionAttachments} ta
+        WHERE ta.transaction_id = ${transactions.id} AND ta.team_id = ${teamId}
+      ), '[]'::json)`.as("attachments"),
       assigned: {
         id: users.id,
         fullName: users.fullName,
@@ -520,11 +613,12 @@ export async function getTransactions(
         name: bankConnections.name,
         logoUrl: bankConnections.logoUrl,
       },
-      tags: sql<
-        Array<{ id: string; name: string | null }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${tags.id}, 'name', ${tags.name})) FILTER (WHERE ${tags.id} IS NOT NULL), '[]'::json)`.as(
-        "tags",
-      ),
+      tags: sql<Array<{ id: string; name: string | null }>>`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', t.id, 'name', t.name))
+        FROM ${transactionTags} tt
+        INNER JOIN ${tags} t ON t.id = tt.tag_id
+        WHERE tt.transaction_id = ${transactions.id} AND tt.team_id = ${teamId}
+      ), '[]'::json)`.as("tags"),
     })
     .from(transactions)
     .leftJoin(
@@ -549,56 +643,7 @@ export async function getTransactions(
       bankConnections,
       eq(bankAccounts.bankConnectionId, bankConnections.id),
     )
-    .leftJoin(
-      transactionTags,
-      and(
-        eq(transactionTags.transactionId, transactions.id),
-        eq(transactionTags.teamId, teamId),
-      ),
-    )
-    .leftJoin(
-      tags,
-      and(eq(tags.id, transactionTags.tagId), eq(tags.teamId, teamId)),
-    )
-    .leftJoin(
-      transactionAttachments,
-      and(
-        eq(transactionAttachments.transactionId, transactions.id),
-        eq(transactionAttachments.teamId, teamId),
-      ),
-    )
-    .where(and(...finalWhereConditions))
-    .groupBy(
-      transactions.id,
-      transactions.date,
-      transactions.amount,
-      transactions.currency,
-      transactions.method,
-      transactions.status,
-      transactions.note,
-      transactions.manual,
-      transactions.internal,
-      transactions.recurring,
-      transactions.frequency,
-      transactions.name,
-      transactions.description,
-      transactions.createdAt,
-      users.id,
-      users.fullName,
-      users.email,
-      users.avatarUrl,
-      transactionCategories.id,
-      transactionCategories.name,
-      transactionCategories.color,
-      transactionCategories.slug,
-      transactionCategories.taxRate,
-      transactionCategories.taxType,
-      bankAccounts.id,
-      bankAccounts.name,
-      bankAccounts.currency,
-      bankConnections.id,
-      bankConnections.logoUrl,
-    );
+    .where(and(...finalWhereConditions));
 
   let query = queryBuilder.$dynamic();
 
@@ -730,6 +775,8 @@ export async function getTransactionById(
       taxRate: transactions.taxRate,
       taxType: transactions.taxType,
       taxAmount: transactions.taxAmount,
+      baseAmount: transactions.baseAmount,
+      baseCurrency: transactions.baseCurrency,
       enrichmentCompleted: transactions.enrichmentCompleted,
       isFulfilled:
         sql<boolean>`(EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, params.teamId)})) OR ${transactions.status} = 'completed'`.as(
@@ -771,11 +818,12 @@ export async function getTransactionById(
         name: bankConnections.name,
         logoUrl: bankConnections.logoUrl,
       },
-      tags: sql<
-        Array<{ id: string; name: string | null }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${tags.id}, 'name', ${tags.name})) FILTER (WHERE ${tags.id} IS NOT NULL), '[]'::json)`.as(
-        "tags",
-      ),
+      tags: sql<Array<{ id: string; name: string | null }>>`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', t.id, 'name', t.name))
+        FROM ${transactionTags} tt
+        INNER JOIN ${tags} t ON t.id = tt.tag_id
+        WHERE tt.transaction_id = ${transactions.id} AND tt.team_id = ${params.teamId}
+      ), '[]'::json)`.as("tags"),
       attachments: sql<
         Array<{
           id: string;
@@ -784,9 +832,11 @@ export async function getTransactionById(
           type: string;
           size: number;
         }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${transactionAttachments.id}, 'filename', ${transactionAttachments.name}, 'path', ${transactionAttachments.path}, 'type', ${transactionAttachments.type}, 'size', ${transactionAttachments.size})) FILTER (WHERE ${transactionAttachments.id} IS NOT NULL), '[]'::json)`.as(
-        "attachments",
-      ),
+      >`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', ta.id, 'filename', ta.name, 'path', ta.path, 'type', ta.type, 'size', ta.size))
+        FROM ${transactionAttachments} ta
+        WHERE ta.transaction_id = ${transactions.id} AND ta.team_id = ${params.teamId}
+      ), '[]'::json)`.as("attachments"),
     })
     .from(transactions)
     .leftJoin(
@@ -815,28 +865,6 @@ export async function getTransactionById(
       eq(bankAccounts.bankConnectionId, bankConnections.id),
     )
     .leftJoin(
-      // For transactionTags aggregation
-      transactionTags,
-      and(
-        eq(transactionTags.transactionId, transactions.id),
-        eq(transactionTags.teamId, params.teamId),
-      ),
-    )
-    .leftJoin(
-      // For transactionTags aggregation
-      tags,
-      and(eq(tags.id, transactionTags.tagId), eq(tags.teamId, params.teamId)),
-    )
-    .leftJoin(
-      // For attachments aggregation
-      transactionAttachments,
-      and(
-        eq(transactionAttachments.transactionId, transactions.id),
-        eq(transactionAttachments.teamId, params.teamId),
-      ),
-    )
-    .leftJoin(
-      // Get any pending suggestion
       transactionMatchSuggestions,
       and(
         eq(transactionMatchSuggestions.transactionId, transactions.id),
@@ -844,48 +872,12 @@ export async function getTransactionById(
         eq(transactionMatchSuggestions.status, "pending"),
       ),
     )
-    .leftJoin(
-      // For inbox details in suggestions
-      inbox,
-      eq(inbox.id, transactionMatchSuggestions.inboxId),
-    )
+    .leftJoin(inbox, eq(inbox.id, transactionMatchSuggestions.inboxId))
     .where(
       and(
         eq(transactions.id, params.id),
         eq(transactions.teamId, params.teamId),
       ),
-    )
-    .groupBy(
-      transactions.id,
-      users.id,
-      transactionCategories.id,
-      transactionCategories.name,
-      transactionCategories.color,
-      transactionCategories.slug,
-      transactionCategories.taxRate,
-      transactionCategories.taxType,
-      bankAccounts.id,
-      bankConnections.id,
-      transactions.date,
-      transactions.amount,
-      transactions.currency,
-      transactions.method,
-      transactions.status,
-      transactions.note,
-      transactions.manual,
-      transactions.internal,
-      transactions.recurring,
-      transactions.frequency,
-      transactions.name,
-      transactions.description,
-      transactions.createdAt,
-      transactionMatchSuggestions.id,
-      transactionMatchSuggestions.inboxId,
-      transactionMatchSuggestions.confidenceScore,
-      inbox.displayName,
-      inbox.amount,
-      inbox.currency,
-      inbox.filePath,
     )
     .limit(1);
 
@@ -958,184 +950,92 @@ export async function deleteTransactions(
     });
 }
 
+export async function deleteTransactionsByInternalIds(
+  db: Database,
+  params: { teamId: string; internalIds: string[] },
+) {
+  if (params.internalIds.length === 0) return [];
+
+  const fullIds = params.internalIds.map((id) => `${params.teamId}_${id}`);
+
+  return db
+    .delete(transactions)
+    .where(
+      and(
+        inArray(transactions.internalId, fullIds),
+        eq(transactions.teamId, params.teamId),
+      ),
+    )
+    .returning({ id: transactions.id });
+}
+
+const MIN_SIMILARITY_THRESHOLD = 0.6;
+const EXACT_MERCHANT_SCORE = 0.95;
+const MAX_CANDIDATES = 200;
+
 type GetSimilarTransactionsParams = {
   name: string;
   teamId: string;
   categorySlug?: string;
   frequency?: "weekly" | "monthly" | "annually" | "irregular";
-  transactionId?: string; // Optional: if we want to exclude the source transaction
-  limit?: number;
-  minSimilarityScore?: number; // Alternative to limit: quality-based filtering
+  transactionId?: string;
 };
 
 /**
- * Find similar transactions using hybrid search: combines embeddings AND FTS for comprehensive results
- *
- * @param db - Database connection
- * @param params - Search parameters including optional embedding settings
- * @returns Array of similar transactions, ordered by relevance (embedding matches first, then FTS matches)
+ * Find similar transactions using pg_trgm + multi-field name scoring.
+ * Designed for vendor matching: when a user changes a category or frequency,
+ * find all other transactions from the same vendor across all time.
  */
 export async function getSimilarTransactions(
   db: Database,
   params: GetSimilarTransactionsParams,
 ) {
-  const {
-    name,
-    teamId,
-    categorySlug,
-    frequency,
-    transactionId,
-    minSimilarityScore = 0.9,
-  } = params;
+  const { name, teamId, categorySlug, transactionId } = params;
 
-  logger.info("Starting hybrid search for similar transactions", {
-    name,
-    teamId,
-    minSimilarityScore,
-    transactionId,
-    categorySlug,
-    frequency,
-  });
-
-  let embeddingResults: any[] = [];
-  let ftsResults: any[] = [];
-  let embeddingSourceText: string | null = null;
-
-  // 1. EMBEDDING SEARCH (if transactionId provided)
+  // Resolve the source transaction's merchant_name when we have a transactionId
+  let sourceMerchantName: string | null = null;
   if (transactionId) {
-    logger.info("Attempting embedding search", {
-      transactionId,
-      teamId,
-    });
-
-    try {
-      const sourceEmbedding = await db
-        .select({
-          embedding: transactionEmbeddings.embedding,
-          sourceText: transactionEmbeddings.sourceText,
-        })
-        .from(transactionEmbeddings)
-        .where(
-          and(
-            eq(transactionEmbeddings.transactionId, transactionId),
-            eq(transactionEmbeddings.teamId, teamId),
-          ),
-        )
-        .limit(1);
-
-      if (sourceEmbedding.length > 0 && sourceEmbedding[0]!.embedding) {
-        const sourceEmbeddingVector = sourceEmbedding[0]!.embedding;
-        const sourceText = sourceEmbedding[0]!.sourceText;
-        embeddingSourceText = sourceText; // Store for FTS search
-
-        logger.info("Found embedding for transaction", {
-          transactionId,
-          sourceText,
-          embeddingExists: true,
-        });
-
-        // Calculate similarity using cosineDistance function from Drizzle
-        const similarity = sql<number>`1 - (${cosineDistance(transactionEmbeddings.embedding, sourceEmbeddingVector)})`;
-
-        const embeddingConditions: (SQL | undefined)[] = [
+    const source = await db
+      .select({ merchantName: transactions.merchantName })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.id, transactionId),
           eq(transactions.teamId, teamId),
-          ne(transactions.id, transactionId), // Exclude the source transaction
-          gt(similarity, minSimilarityScore), // Use configurable similarity threshold
-        ];
+        ),
+      )
+      .limit(1);
 
-        if (categorySlug) {
-          embeddingConditions.push(
-            or(
-              isNull(transactions.categorySlug),
-              ne(transactions.categorySlug, categorySlug),
-            ),
-          );
-        }
-
-        // Note: We don't filter by frequency here because we want to find similar transactions
-        // regardless of their current frequency so we can update them to the new frequency
-
-        const finalEmbeddingConditions = embeddingConditions.filter(
-          (c) => c !== undefined,
-        ) as SQL[];
-
-        embeddingResults = await db
-          .select({
-            id: transactions.id,
-            amount: transactions.amount,
-            teamId: transactions.teamId,
-            name: transactions.name,
-            date: transactions.date,
-            categorySlug: transactions.categorySlug,
-            frequency: transactions.frequency,
-            similarity,
-            source: sql<string>`'embedding'`.as("source"),
-          })
-          .from(transactions)
-          .innerJoin(
-            transactionEmbeddings,
-            eq(transactionEmbeddings.transactionId, transactions.id),
-          )
-          .where(and(...finalEmbeddingConditions))
-          .orderBy(desc(similarity)); // No limit - let similarity threshold determine results
-
-        logger.info("Embedding search completed", {
-          resultsFound: embeddingResults.length,
-          minSimilarityScore,
-          transactionId,
-        });
-      } else {
-        logger.warn(
-          "No embedding found for transaction - will rely on FTS only",
-          {
-            transactionId,
-            teamId,
-            transactionName: name,
-          },
-        );
-      }
-    } catch (error) {
-      logger.error("Embedding search failed", {
-        error: error instanceof Error ? error.message : String(error),
-        transactionId,
-        teamId,
-      });
-    }
+    sourceMerchantName = source[0]?.merchantName ?? null;
   }
 
-  // 2. FTS SEARCH (always run to complement embeddings)
-  logger.info("Running FTS search", {
-    name,
-    teamId,
-    hasEmbeddingResults: embeddingResults.length > 0,
-    hasSourceEmbedding: !!embeddingSourceText,
-  });
+  // Build OR conditions for candidate retrieval:
+  // Path A: exact merchant_name match (handles "AMZN MKTP US" ↔ "Amazon.com" via enrichment)
+  // Path B: trigram similarity on name/merchant fields
+  const candidateConditions: SQL[] = [
+    sql`(${name} %> ${transactions.name} OR ${name} %> ${transactions.merchantName})`,
+  ];
 
-  const ftsConditions: (SQL | undefined)[] = [eq(transactions.teamId, teamId)];
+  if (sourceMerchantName) {
+    candidateConditions.push(
+      sql`LOWER(${transactions.merchantName}) = LOWER(${sourceMerchantName})`,
+    );
+    candidateConditions.push(
+      sql`(${sourceMerchantName} %> ${transactions.name} OR ${sourceMerchantName} %> ${transactions.merchantName})`,
+    );
+  }
+
+  const whereConditions: (SQL | undefined)[] = [
+    eq(transactions.teamId, teamId),
+    or(...candidateConditions),
+  ];
 
   if (transactionId) {
-    ftsConditions.push(ne(transactions.id, transactionId));
+    whereConditions.push(ne(transactions.id, transactionId));
   }
-
-  // Always use the original transaction name for FTS search to ensure we find exact matches
-  // The embedding source text might be different from the actual transaction names
-  const searchTerm = name;
-  const searchQuery = buildSearchQuery(searchTerm);
-  ftsConditions.push(
-    sql`to_tsquery('english', ${searchQuery}) @@ ${transactions.ftsVector}`,
-  );
-
-  logger.info("FTS search using term", {
-    searchTerm,
-    searchQuery,
-    usingEmbeddingSourceText: false, // Always false now - we use original name
-    originalName: name,
-    embeddingSourceText: embeddingSourceText || "none",
-    reason: "Using original transaction name to find exact matches",
-  });
 
   if (categorySlug) {
-    ftsConditions.push(
+    whereConditions.push(
       or(
         isNull(transactions.categorySlug),
         ne(transactions.categorySlug, categorySlug),
@@ -1143,93 +1043,74 @@ export async function getSimilarTransactions(
     );
   }
 
-  // Exclude transactions already found by embeddings
-  if (embeddingResults.length > 0) {
-    const embeddingIds = embeddingResults.map((r) => r.id);
-    ftsConditions.push(
-      sql`${transactions.id} NOT IN (${sql.join(
-        embeddingIds.map((id) => sql`${id}`),
-        sql`, `,
-      )})`,
-    );
-  }
-
-  const finalFtsConditions = ftsConditions.filter(
-    (c) => c !== undefined,
-  ) as SQL[];
-
-  logger.info("FTS search conditions", {
-    searchTerm,
-    searchQuery,
-    conditionsCount: finalFtsConditions.length,
-    teamId,
-    transactionId,
-    categorySlug,
-    frequency,
+  const candidates = await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL pg_trgm.word_similarity_threshold = 0.3`);
+    return tx
+      .select({
+        id: transactions.id,
+        amount: transactions.amount,
+        teamId: transactions.teamId,
+        name: transactions.name,
+        date: transactions.date,
+        categorySlug: transactions.categorySlug,
+        frequency: transactions.frequency,
+        merchantName: transactions.merchantName,
+      })
+      .from(transactions)
+      .where(and(...(whereConditions.filter(Boolean) as SQL[])))
+      .orderBy(
+        sql`GREATEST(
+          word_similarity(${name}, ${transactions.merchantName}),
+          word_similarity(${name}, ${transactions.name})
+        ) DESC`,
+      )
+      .limit(MAX_CANDIDATES);
   });
 
-  ftsResults = await db
-    .select({
-      id: transactions.id,
-      amount: transactions.amount,
-      teamId: transactions.teamId,
-      name: transactions.name,
-      date: transactions.date,
-      categorySlug: transactions.categorySlug,
-      frequency: transactions.frequency,
-      source: sql<string>`'fts'`.as("source"),
+  // Score each candidate using a cross-field comparison matrix
+  const scored = candidates
+    .map((candidate) => {
+      // Exact merchant_name match is the strongest signal
+      if (
+        sourceMerchantName &&
+        candidate.merchantName &&
+        sourceMerchantName.toLowerCase() ===
+          candidate.merchantName.toLowerCase()
+      ) {
+        return { ...candidate, score: EXACT_MERCHANT_SCORE };
+      }
+
+      // Cross-field comparison matrix: try source name and source merchant
+      // against candidate name and candidate merchant. calculateNameScore
+      // already compares the first arg against both the second and third args.
+      const scores: number[] = [
+        calculateNameScore(name, candidate.name, candidate.merchantName),
+      ];
+
+      if (sourceMerchantName) {
+        scores.push(
+          calculateNameScore(
+            sourceMerchantName,
+            candidate.name,
+            candidate.merchantName,
+          ),
+        );
+      }
+
+      return { ...candidate, score: Math.max(...scores) };
     })
-    .from(transactions)
-    .where(and(...finalFtsConditions)); // No limit - get all FTS matches
+    .filter((r) => r.score >= MIN_SIMILARITY_THRESHOLD)
+    .sort((a, b) => b.score - a.score);
 
-  logger.info("FTS search completed", {
-    resultsFound: ftsResults.length,
-    searchTerm,
-    searchQuery,
-    teamId,
-    sampleResults: ftsResults.slice(0, 3).map((r) => ({
-      name: r.name,
-      id: r.id,
-    })),
-  });
-
-  // 3. COMBINE AND DEDUPLICATE RESULTS
-  const allResults = [
-    ...embeddingResults.map(({ similarity, source, ...rest }) => ({
-      ...rest,
-      matchType: source,
-    })),
-    ...ftsResults.map(({ source, ...rest }) => ({
-      ...rest,
-      matchType: source,
-    })),
-  ];
-
-  // Remove duplicates based on transaction ID (most accurate)
-  // If same ID appears in both embedding and FTS results, prioritize embedding
-  const uniqueResults = allResults.filter((transaction, index, array) => {
-    return index === array.findIndex((t) => t.id === transaction.id);
-  });
-
-  // Log final results with structured data
-  logger.info("Hybrid search completed", {
-    totalResults: allResults.length,
-    uniqueResults: uniqueResults.length,
-    embeddingMatches: embeddingResults.length,
-    ftsMatches: ftsResults.length,
+  logger.info("getSimilarTransactions completed", {
     name,
     teamId,
-    minSimilarityScore,
-    results: uniqueResults.map((t, i) => ({
-      rank: i + 1,
-      name: t.name,
-      matchType: t.matchType,
-      id: t.id,
-    })),
+    sourceMerchantName,
+    candidatesRetrieved: candidates.length,
+    resultsAfterScoring: scored.length,
   });
 
-  // Remove matchType field and return all quality matches
-  return uniqueResults.map(({ matchType, ...rest }) => rest);
+  return scored.map(({ merchantName: _m, score: _s, ...rest }) => rest);
 }
 
 type SearchTransactionMatchParams = {
@@ -1270,27 +1151,191 @@ export async function searchTransactionMatch(
   } = params;
 
   if (query) {
-    const results = await db.executeOnReplica(
-      sql`SELECT * FROM search_transactions_direct(
-        ${teamId},
-        ${query},
-        ${maxResults}
-      )`,
-    );
+    const searchTerm = query.trim();
+    if (!searchTerm) return [];
 
-    // Cast results to match the new type structure and filter if needed
-    const processedResults = results.map((result: any) => ({
-      ...result,
-      is_already_matched: false,
-      matched_attachment_filename: undefined,
-    }));
+    // Fetch inbox context for scoring when available
+    let inboxContext: {
+      displayName: string | null;
+      amount: number | null;
+      currency: string | null;
+      date: string | null;
+      baseAmount: number | null;
+      baseCurrency: string | null;
+    } | null = null;
 
-    return processedResults;
+    if (inboxId) {
+      const [item] = await db
+        .select({
+          displayName: inbox.displayName,
+          amount: inbox.amount,
+          currency: inbox.currency,
+          date: inbox.date,
+          baseAmount: inbox.baseAmount,
+          baseCurrency: inbox.baseCurrency,
+        })
+        .from(inbox)
+        .where(and(eq(inbox.id, inboxId), eq(inbox.teamId, teamId)))
+        .limit(1);
+      inboxContext = item ?? null;
+    }
+
+    const numericValue = Number.parseFloat(searchTerm.replace(/[^\d.-]/g, ""));
+    const isNumeric =
+      !Number.isNaN(numericValue) && Number.isFinite(numericValue);
+
+    const searchQuery = buildSearchQuery(searchTerm);
+
+    const whereConditions: SQL[] = [
+      eq(transactions.teamId, teamId),
+      eq(transactions.status, "posted"),
+    ];
+
+    if (!includeAlreadyMatched) {
+      whereConditions.push(
+        sql`NOT EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)})`,
+      );
+    }
+
+    if (isNumeric) {
+      const tolerance = Math.max(1, Math.abs(numericValue) * 0.1);
+      whereConditions.push(
+        or(
+          sql`ABS(ABS(${transactions.amount}) - ${numericValue}) <= ${tolerance}`,
+          sql`ABS(ABS(COALESCE(${transactions.baseAmount}, 0)) - ${numericValue}) <= ${tolerance}`,
+          sql`to_tsquery('english', ${searchQuery}) @@ ${transactions.ftsVector}`,
+          sql`${transactions.name} ILIKE '%' || ${searchTerm} || '%'`,
+          sql`${transactions.merchantName} ILIKE '%' || ${searchTerm} || '%'`,
+        )!,
+      );
+    } else {
+      whereConditions.push(
+        or(
+          sql`to_tsquery('english', ${searchQuery}) @@ ${transactions.ftsVector}`,
+          sql`${transactions.name} ILIKE '%' || ${searchTerm} || '%'`,
+          sql`${transactions.merchantName} ILIKE '%' || ${searchTerm} || '%'`,
+          sql`${transactions.description} ILIKE '%' || ${searchTerm} || '%'`,
+        )!,
+      );
+    }
+
+    // Fetch more candidates than needed so we can score and re-rank
+    const fetchLimit = inboxContext ? Math.max(maxResults * 3, 30) : maxResults;
+
+    const candidates = await db
+      .select({
+        transactionId: transactions.id,
+        name: transactions.name,
+        transactionAmount: transactions.amount,
+        transactionCurrency: transactions.currency,
+        transactionDate: transactions.date,
+        merchantName: transactions.merchantName,
+        baseAmount: transactions.baseAmount,
+        baseCurrency: transactions.baseCurrency,
+        isAlreadyMatched: sql<boolean>`
+            EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)})
+          `.as("is_already_matched"),
+        attachmentFilename: sql<string | null>`
+            (SELECT ${transactionAttachments.name} FROM ${transactionAttachments}
+             WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}
+             LIMIT 1)
+          `.as("attachment_filename"),
+      })
+      .from(transactions)
+      .where(and(...whereConditions))
+      .orderBy(desc(transactions.date))
+      .limit(fetchLimit);
+
+    if (!inboxContext) {
+      return candidates.slice(0, maxResults).map((r) => ({
+        transaction_id: r.transactionId,
+        name: r.name,
+        transaction_amount: r.transactionAmount,
+        transaction_currency: r.transactionCurrency,
+        transaction_date: r.transactionDate,
+        name_score: 0,
+        amount_score: 0,
+        currency_score: 0,
+        date_score: 0,
+        confidence_score: 0,
+        is_already_matched: r.isAlreadyMatched,
+        matched_attachment_filename: r.attachmentFilename ?? undefined,
+      }));
+    }
+
+    return candidates
+      .map((t) => {
+        const nameScore = calculateNameScore(
+          inboxContext.displayName,
+          t.name,
+          t.merchantName,
+        );
+        const amountScore = calculateAmountScore(
+          {
+            amount: inboxContext.amount,
+            currency: inboxContext.currency,
+            baseAmount: inboxContext.baseAmount,
+            baseCurrency: inboxContext.baseCurrency,
+          },
+          {
+            amount: t.transactionAmount,
+            currency: t.transactionCurrency,
+            baseAmount: t.baseAmount,
+            baseCurrency: t.baseCurrency,
+          },
+        );
+        const currencyScore = calculateCurrencyScore(
+          inboxContext.currency || undefined,
+          t.transactionCurrency || undefined,
+          inboxContext.baseCurrency || undefined,
+          t.baseCurrency || undefined,
+        );
+        const dateScore = inboxContext.date
+          ? calculateDateScore(inboxContext.date, t.transactionDate)
+          : 0;
+        const isExactAmount =
+          inboxContext.amount !== null &&
+          Math.abs(
+            Math.abs(inboxContext.amount || 0) -
+              Math.abs(t.transactionAmount || 0),
+          ) < 0.01;
+        const isSameCurrency = inboxContext.currency === t.transactionCurrency;
+        const confidence = scoreMatch({
+          nameScore,
+          amountScore,
+          dateScore,
+          currencyScore,
+          isSameCurrency,
+          isExactAmount,
+        });
+
+        return {
+          transaction_id: t.transactionId,
+          name: t.name,
+          transaction_amount: t.transactionAmount,
+          transaction_currency: t.transactionCurrency,
+          transaction_date: t.transactionDate,
+          name_score: Math.round(nameScore * 1000) / 1000,
+          amount_score: Math.round(amountScore * 1000) / 1000,
+          currency_score: Math.round(currencyScore * 1000) / 1000,
+          date_score: Math.round(dateScore * 1000) / 1000,
+          confidence_score: Math.round(confidence * 1000) / 1000,
+          is_already_matched: t.isAlreadyMatched,
+          matched_attachment_filename: t.attachmentFilename ?? undefined,
+        };
+      })
+      .sort((a, b) => {
+        if (a.confidence_score !== b.confidence_score)
+          return b.confidence_score - a.confidence_score;
+        if (a.is_already_matched !== b.is_already_matched)
+          return a.is_already_matched ? 1 : -1;
+        return 0;
+      })
+      .slice(0, maxResults);
   }
 
   if (inboxId) {
     try {
-      // Implement the matching logic using Drizzle instead of stored procedure
       const inboxItem = await db
         .select({
           id: inbox.id,
@@ -1309,107 +1354,115 @@ export async function searchTransactionMatch(
         return [];
       }
 
-      const item = inboxItem[0]!; // Safe to use non-null assertion since we checked length above
+      const item = inboxItem[0]!;
+      const inboxAmount = Math.abs(item.amount || 0);
+      const inboxBaseAmount = Math.abs(item.baseAmount || 0);
 
-      // Find candidate transactions including those with attachments
-      const candidateTransactions = await db
-        .select({
-          transactionId: transactions.id,
-          name: transactions.name,
-          transactionAmount: transactions.amount,
-          transactionCurrency: transactions.currency,
-          transactionDate: transactions.date,
-          baseAmount: transactions.baseAmount,
-          baseCurrency: transactions.baseCurrency,
-          // Check if transaction is already matched (has attachments or completed status)
-          isAlreadyMatched: sql<boolean>`
-            (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')
-          `.as("is_already_matched"),
-          // Get the first attachment filename if it exists
-          attachmentFilename: sql<string | null>`
-            (SELECT ${transactionAttachments.name} FROM ${transactionAttachments} 
-             WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)} 
-             LIMIT 1)
-          `.as("attachment_filename"),
-          // Use pg_trgm similarity for accurate name matching
-          nameScore:
-            sql<number>`similarity(${transactions.name}, ${item.displayName ?? ""})`.as(
-              "name_score",
-            ),
-          // More flexible amount matching with currency conversion support
-          amountScore: sql<number>`
-            GREATEST(
-              -- Direct currency match
-              (CASE WHEN ${transactions.currency} = ${item.currency ?? ""} THEN
-                (1 - LEAST(ABS(ABS(${transactions.amount}) - ${item.amount ?? 0}::DOUBLE PRECISION) / GREATEST(${item.amount ?? 1}::DOUBLE PRECISION, 1), 1))::DOUBLE PRECISION
-               ELSE 0 END),
-              -- Base currency match (if both have base currency data)
-              (CASE WHEN ${transactions.baseCurrency} IS NOT NULL AND ${item.baseCurrency ?? ""} != '' AND ${transactions.baseCurrency} = ${item.baseCurrency ?? ""} THEN
-                (1 - LEAST(ABS(ABS(${transactions.baseAmount}) - ${item.baseAmount ?? 0}::DOUBLE PRECISION) / GREATEST(${item.baseAmount ?? 1}::DOUBLE PRECISION, 1), 1))::DOUBLE PRECISION
-               ELSE 0 END),
-              -- Cross-currency fallback for common ratios
-              (CASE WHEN ${transactions.currency} != ${item.currency ?? ""} THEN
-                LEAST(
-                  (1 - LEAST(ABS(ABS(${transactions.amount}) / 10.0 - ${item.amount ?? 0}::DOUBLE PRECISION) / GREATEST(${item.amount ?? 1}::DOUBLE PRECISION, 1), 1))::DOUBLE PRECISION * 0.4,
-                  0.6
-                )
-               ELSE 0 END)
-            )
-          `.as("amount_score"),
-          // Currency matching score - give partial credit for different currencies
-          currencyScore: sql<number>`
-            (CASE
-              WHEN ${transactions.currency} = ${item.currency ?? ""} THEN 1.0
-              WHEN ${transactions.baseCurrency} IS NOT NULL AND ${item.baseCurrency ?? ""} != '' AND ${transactions.baseCurrency} = ${item.baseCurrency ?? ""} THEN 0.8
-              ELSE 0.3
-            END)::DOUBLE PRECISION
-          `.as("currency_score"),
-          // Date proximity score (within 30 days gets full score, linear decay after)
-          dateScore: sql<number>`
-            (1 - LEAST(ABS(${transactions.date}::date - ${item.date}::date) / 30.0, 1))::DOUBLE PRECISION
-          `.as("date_score"),
-        })
-        .from(transactions)
-        .where(
-          and(
-            eq(transactions.teamId, teamId),
-            eq(transactions.status, "posted"),
-            // Date range filter: within 90 days of inbox date
-            sql`${transactions.date} BETWEEN ${item.date}::date - INTERVAL '90 days' AND ${item.date}::date + INTERVAL '90 days'`,
-            // Conditionally exclude already matched transactions
-            ...(includeAlreadyMatched
-              ? []
-              : [
-                  sql`NOT (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`,
-                ]),
-            // More lenient amount filtering: allow a wider range for cross-currency matching
-            or(
-              // Direct currency match with 20% tolerance
-              and(
-                eq(transactions.currency, item.currency ?? ""),
-                sql`ABS(${transactions.amount}) BETWEEN ${(item.amount ?? 0) * 0.8}::DOUBLE PRECISION AND ${(item.amount ?? 0) * 1.2}::DOUBLE PRECISION`,
-              ),
-              // Base currency match with 20% tolerance (only if both have base currency)
-              and(
-                sql`${transactions.baseCurrency} IS NOT NULL`,
-                sql`${item.baseCurrency ?? ""} != ''`,
-                eq(transactions.baseCurrency, item.baseCurrency ?? ""),
-                sql`ABS(${transactions.baseAmount}) BETWEEN ${(item.baseAmount ?? 0) * 0.8}::DOUBLE PRECISION AND ${(item.baseAmount ?? 0) * 1.2}::DOUBLE PRECISION`,
-              ),
-              // Cross-currency: allow 10:1 ratio for common conversions like SEK:USD
-              sql`ABS(${transactions.amount}) BETWEEN ${(item.amount ?? 0) * 8}::DOUBLE PRECISION AND ${(item.amount ?? 0) * 12}::DOUBLE PRECISION`,
-            ),
-          ),
+      const candidateTransactions = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SET LOCAL pg_trgm.word_similarity_threshold = 0.3`,
         );
+        return tx
+          .select({
+            transactionId: transactions.id,
+            name: transactions.name,
+            transactionAmount: transactions.amount,
+            transactionCurrency: transactions.currency,
+            transactionDate: transactions.date,
+            baseAmount: transactions.baseAmount,
+            baseCurrency: transactions.baseCurrency,
+            isAlreadyMatched: sql<boolean>`
+              (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')
+            `.as("is_already_matched"),
+            attachmentFilename: sql<string | null>`
+              (SELECT ${transactionAttachments.name} FROM ${transactionAttachments} 
+               WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)} 
+               LIMIT 1)
+            `.as("attachment_filename"),
+            merchantName: transactions.merchantName,
+          })
+          .from(transactions)
+          .where(
+            and(
+              eq(transactions.teamId, teamId),
+              eq(transactions.status, "posted"),
+              sql`${transactions.date} IS NOT NULL`,
+              sql`${transactions.date} BETWEEN ${item.date}::date - INTERVAL '90 days' AND ${item.date}::date + INTERVAL '30 days'`,
+              ...(includeAlreadyMatched
+                ? []
+                : [
+                    sql`NOT (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`,
+                  ]),
+              or(
+                and(
+                  eq(transactions.currency, item.currency ?? ""),
+                  sql`ABS(ABS(${transactions.amount}) - ${inboxAmount}) < GREATEST(1, ${inboxAmount} * 0.25)`,
+                ),
+                sql`(${item.displayName ?? ""} %> ${transactions.name} OR ${item.displayName ?? ""} %> ${transactions.merchantName})`,
+                and(
+                  sql`${transactions.baseCurrency} IS NOT NULL`,
+                  sql`${item.baseCurrency ?? ""} != ''`,
+                  eq(transactions.baseCurrency, item.baseCurrency ?? ""),
+                  sql`ABS(ABS(COALESCE(${transactions.baseAmount}, 0)) - ${inboxBaseAmount}) < GREATEST(50, ${inboxBaseAmount} * 0.15)`,
+                ),
+              ),
+            ),
+          )
+          .orderBy(
+            sql`GREATEST(word_similarity(${item.displayName ?? ""}, ${transactions.name}), word_similarity(${item.displayName ?? ""}, ${transactions.merchantName})) DESC`,
+            sql`ABS(ABS(${transactions.amount}) - ${inboxAmount}) / GREATEST(1.0, ${inboxAmount})`,
+            sql`ABS(${transactions.date} - ${item.date}::date)`,
+          )
+          .limit(Math.max(maxResults * 3, 30));
+      });
 
-      // Calculate confidence scores and filter results
       const scoredResults = candidateTransactions
         .map((transaction) => {
-          const confidenceScore =
-            transaction.nameScore * 0.4 + // Name similarity weight: 40% (slightly reduced)
-            transaction.amountScore * 0.4 + // Amount match weight: 40% (increased importance)
-            transaction.currencyScore * 0.1 + // Currency match weight: 10%
-            transaction.dateScore * 0.1; // Date proximity weight: 10%
+          const nameScore = calculateNameScore(
+            item.displayName,
+            transaction.name,
+            transaction.merchantName,
+          );
+          const amountScore = calculateAmountScore(
+            {
+              amount: item.amount,
+              currency: item.currency,
+              baseAmount: item.baseAmount,
+              baseCurrency: item.baseCurrency,
+            },
+            {
+              amount: transaction.transactionAmount,
+              currency: transaction.transactionCurrency,
+              baseAmount: transaction.baseAmount,
+              baseCurrency: transaction.baseCurrency,
+            },
+          );
+          const currencyScore = calculateCurrencyScore(
+            item.currency || undefined,
+            transaction.transactionCurrency || undefined,
+            item.baseCurrency || undefined,
+            transaction.baseCurrency || undefined,
+          );
+          const dateScore = calculateDateScore(
+            item.date!,
+            transaction.transactionDate,
+          );
+          const isExactAmount =
+            item.amount !== null &&
+            Math.abs(
+              Math.abs(item.amount || 0) -
+                Math.abs(transaction.transactionAmount || 0),
+            ) < 0.01;
+          const isSameCurrency =
+            item.currency === transaction.transactionCurrency;
+          const confidence = scoreMatch({
+            nameScore,
+            amountScore,
+            dateScore,
+            currencyScore,
+            isSameCurrency,
+            isExactAmount,
+          });
 
           const result = {
             transaction_id: transaction.transactionId,
@@ -1417,11 +1470,11 @@ export async function searchTransactionMatch(
             transaction_amount: transaction.transactionAmount,
             transaction_currency: transaction.transactionCurrency,
             transaction_date: transaction.transactionDate,
-            name_score: Math.round(transaction.nameScore * 10) / 10,
-            amount_score: Math.round(transaction.amountScore * 10) / 10,
-            currency_score: Math.round(transaction.currencyScore * 10) / 10,
-            date_score: Math.round(transaction.dateScore * 10) / 10,
-            confidence_score: Math.round(confidenceScore * 10) / 10,
+            name_score: Math.round(nameScore * 1000) / 1000,
+            amount_score: Math.round(amountScore * 1000) / 1000,
+            currency_score: Math.round(currencyScore * 1000) / 1000,
+            date_score: Math.round(dateScore * 1000) / 1000,
+            confidence_score: Math.round(confidence * 1000) / 1000,
             is_already_matched: transaction.isAlreadyMatched,
             matched_attachment_filename:
               transaction.attachmentFilename ?? undefined,
@@ -1431,12 +1484,10 @@ export async function searchTransactionMatch(
         })
         .filter((result) => result.confidence_score >= minConfidenceScore)
         .sort((a, b) => {
-          // Sort by confidence score first (highest first), then by match status (unmatched first)
           if (a.confidence_score !== b.confidence_score) {
             return b.confidence_score - a.confidence_score;
           }
 
-          // If confidence scores are equal, prioritize unmatched transactions
           if (a.is_already_matched !== b.is_already_matched) {
             return a.is_already_matched ? 1 : -1;
           }
@@ -1583,6 +1634,8 @@ export async function getTransactionsByIds(
       tax_type: transactions.taxType,
       tax_rate: transactions.taxRate,
       tax_amount: transactions.taxAmount,
+      base_amount: transactions.baseAmount,
+      base_currency: transactions.baseCurrency,
       status: transactions.status,
       attachments: sql<
         Array<{
@@ -1592,9 +1645,11 @@ export async function getTransactionsByIds(
           type: string | null;
           size: number | null;
         }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${transactionAttachments.id}, 'name', ${transactionAttachments.name}, 'path', ${transactionAttachments.path}, 'type', ${transactionAttachments.type}, 'size', ${transactionAttachments.size})) FILTER (WHERE ${transactionAttachments.id} IS NOT NULL), '[]'::json)`.as(
-        "attachments",
-      ),
+      >`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', ta.id, 'name', ta.name, 'path', ta.path, 'type', ta.type, 'size', ta.size))
+        FROM ${transactionAttachments} ta
+        WHERE ta.transaction_id = ${transactions.id} AND ta.team_id = ${teamId}
+      ), '[]'::json)`.as("attachments"),
       category: sql<{
         id: string;
         name: string | null;
@@ -1613,9 +1668,12 @@ export async function getTransactionsByIds(
       ),
       tags: sql<
         Array<{ id: string; tag: { id: string; name: string | null } }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${transactionTags.id}, 'tag', jsonb_build_object('id', ${tags.id}, 'name', ${tags.name}))) FILTER (WHERE ${transactionTags.id} IS NOT NULL), '[]'::json)`.as(
-        "tags",
-      ),
+      >`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', tt.id, 'tag', jsonb_build_object('id', t.id, 'name', t.name)))
+        FROM ${transactionTags} tt
+        INNER JOIN ${tags} t ON t.id = tt.tag_id
+        WHERE tt.transaction_id = ${transactions.id} AND tt.team_id = ${teamId}
+      ), '[]'::json)`.as("tags"),
     })
     .from(transactions)
     .leftJoin(
@@ -1632,36 +1690,7 @@ export async function getTransactionsByIds(
         eq(bankAccounts.teamId, teamId),
       ),
     )
-    .leftJoin(
-      transactionTags,
-      and(
-        eq(transactionTags.transactionId, transactions.id),
-        eq(transactionTags.teamId, teamId),
-      ),
-    )
-    .leftJoin(
-      tags,
-      and(eq(tags.id, transactionTags.tagId), eq(tags.teamId, teamId)),
-    )
-    .leftJoin(
-      transactionAttachments,
-      and(
-        eq(transactionAttachments.transactionId, transactions.id),
-        eq(transactionAttachments.teamId, teamId),
-      ),
-    )
-    .where(and(inArray(transactions.id, ids), eq(transactions.teamId, teamId)))
-    .groupBy(
-      transactions.id,
-      transactionCategories.id,
-      transactionCategories.name,
-      transactionCategories.description,
-      transactionCategories.taxRate,
-      transactionCategories.taxType,
-      transactionCategories.taxReportingCode,
-      bankAccounts.id,
-      bankAccounts.name,
-    );
+    .where(and(inArray(transactions.id, ids), eq(transactions.teamId, teamId)));
 
   return results;
 }
@@ -1935,47 +1964,23 @@ export type UpsertTransactionsParams = {
 
 /**
  * Bulk upsert transactions with conflict handling on internalId
- * Used by import-transactions and update-account-base-currency processors
+ * Used by import-transactions processor. Skips duplicates (onConflictDoNothing).
  */
 export async function upsertTransactions(
   db: Database,
   params: UpsertTransactionsParams,
 ): Promise<Array<{ id: string }>> {
-  const { transactions: transactionsData, teamId } = params;
+  // Exclude teamId from the params
+  const { transactions: transactionsData, teamId: _teamId } = params;
+  if (transactionsData.length === 0) {
+    return [];
+  }
 
   const upserted = await db
     .insert(transactions)
     .values(transactionsData)
-    .onConflictDoUpdate({
+    .onConflictDoNothing({
       target: [transactions.internalId],
-      set: {
-        // Update all fields except id and createdAt
-        name: sql`excluded.name`,
-        amount: sql`excluded.amount`,
-        currency: sql`excluded.currency`,
-        date: sql`excluded.date`,
-        description: sql`excluded.description`,
-        method: sql`excluded.method`,
-        status: sql`excluded.status`,
-        balance: sql`excluded.balance`,
-        note: sql`excluded.note`,
-        categorySlug: sql`excluded.category_slug`,
-        counterpartyName: sql`excluded.counterparty_name`,
-        merchantName: sql`excluded.merchant_name`,
-        bankAccountId: sql`excluded.bank_account_id`,
-        assignedId: sql`excluded.assigned_id`,
-        internal: sql`excluded.internal`,
-        notified: sql`excluded.notified`,
-        manual: sql`excluded.manual`,
-        baseAmount: sql`excluded.base_amount`,
-        baseCurrency: sql`excluded.base_currency`,
-        taxAmount: sql`excluded.tax_amount`,
-        taxRate: sql`excluded.tax_rate`,
-        taxType: sql`excluded.tax_type`,
-        recurring: sql`excluded.recurring`,
-        frequency: sql`excluded.frequency`,
-        enrichmentCompleted: sql`excluded.enrichment_completed`,
-      },
     })
     .returning({
       id: transactions.id,
@@ -2010,6 +2015,36 @@ export async function getTransactionsByAccountId(
     );
 }
 
+export type GetTransactionCountByBankAccountIdParams = {
+  bankAccountId: string;
+  teamId: string;
+};
+
+/**
+ * Get transaction count for a bank account
+ * Used by delete bank account dialog to show impact
+ */
+export async function getTransactionCountByBankAccountId(
+  db: Database,
+  params: GetTransactionCountByBankAccountIdParams,
+): Promise<number> {
+  const { bankAccountId, teamId } = params;
+
+  const [result] = await db
+    .select({
+      count: sql<number>`COUNT(*)::int`.as("count"),
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.bankAccountId, bankAccountId),
+        eq(transactions.teamId, teamId),
+      ),
+    );
+
+  return result?.count ?? 0;
+}
+
 export type BulkUpdateTransactionsBaseCurrencyParams = {
   transactions: Array<{
     id: string;
@@ -2021,85 +2056,46 @@ export type BulkUpdateTransactionsBaseCurrencyParams = {
 
 /**
  * Bulk update transactions with base currency/amount
- * Uses batch processing internally for large datasets
+ * Uses per-row updates in a transaction — avoids array serialization issues
+ * with postgres.js + Drizzle (unnest expands arrays into many params).
  */
 export async function bulkUpdateTransactionsBaseCurrency(
   db: Database,
   params: BulkUpdateTransactionsBaseCurrencyParams,
 ) {
   const { transactions: transactionsData, teamId } = params;
-  const BATCH_LIMIT = 500;
 
-  // Process in batches
-  for (let i = 0; i < transactionsData.length; i += BATCH_LIMIT) {
-    const batch = transactionsData.slice(i, i + BATCH_LIMIT);
+  if (!teamId?.trim()) {
+    throw new Error("bulkUpdateTransactionsBaseCurrency: teamId is required");
+  }
 
-    // Get existing transactions to preserve all fields
-    const transactionIds = batch.map((tx) => tx.id);
-    const existingTransactions = await db
-      .select()
-      .from(transactions)
-      .where(
-        and(
-          inArray(transactions.id, transactionIds),
-          eq(transactions.teamId, teamId),
-        ),
-      );
+  if (transactionsData.length === 0) return;
 
-    // Create upsert data preserving all existing fields, updating only baseAmount and baseCurrency
-    const upsertData: UpsertTransactionData[] = existingTransactions.map(
-      (tx) => {
-        const update = batch.find((b) => b.id === tx.id);
-        return {
-          name: tx.name,
-          date: tx.date,
-          method: tx.method as "other" | "card_purchase" | "transfer",
-          amount: Number(tx.amount),
-          currency: tx.currency ?? "",
-          teamId: tx.teamId,
-          bankAccountId: tx.bankAccountId ?? null,
-          internalId: tx.internalId ?? "",
-          status: (tx.status ?? "posted") as
-            | "pending"
-            | "completed"
-            | "archived"
-            | "posted"
-            | "excluded",
-          manual: tx.manual ?? false,
-          categorySlug: tx.categorySlug,
-          description: tx.description,
-          balance: tx.balance ? Number(tx.balance) : null,
-          note: tx.note,
-          counterpartyName: tx.counterpartyName,
-          merchantName: tx.merchantName,
-          assignedId: tx.assignedId,
-          internal: tx.internal ?? false,
-          notified: tx.notified ?? false,
-          baseAmount:
-            update?.baseAmount ??
-            (tx.baseAmount ? Number(tx.baseAmount) : null),
-          baseCurrency: update?.baseCurrency ?? tx.baseCurrency ?? null,
-          taxAmount: tx.taxAmount ? Number(tx.taxAmount) : null,
-          taxRate: tx.taxRate ? Number(tx.taxRate) : null,
-          taxType: tx.taxType,
-          recurring: tx.recurring ?? false,
-          frequency: tx.frequency as
-            | "weekly"
-            | "biweekly"
-            | "monthly"
-            | "semi_monthly"
-            | "annually"
-            | "irregular"
-            | "unknown"
-            | null,
-          enrichmentCompleted: tx.enrichmentCompleted ?? false,
-        };
-      },
-    );
+  const BATCH_SIZE = 100;
+  const CONCURRENCY = 10;
 
-    await upsertTransactions(db, {
-      transactions: upsertData,
-      teamId,
+  for (let i = 0; i < transactionsData.length; i += BATCH_SIZE) {
+    const batch = transactionsData.slice(i, i + BATCH_SIZE);
+    await db.transaction(async (tx) => {
+      for (let j = 0; j < batch.length; j += CONCURRENCY) {
+        const chunk = batch.slice(j, j + CONCURRENCY);
+        await Promise.all(
+          chunk.map((item) =>
+            tx
+              .update(transactions)
+              .set({
+                baseAmount: item.baseAmount,
+                baseCurrency: item.baseCurrency,
+              })
+              .where(
+                and(
+                  eq(transactions.id, item.id),
+                  eq(transactions.teamId, teamId),
+                ),
+              ),
+          ),
+        );
+      }
     });
   }
 }
@@ -2162,13 +2158,19 @@ export async function getTransactionsReadyForExportCount(
 export async function markTransactionsAsExported(
   db: Database,
   transactionIds: string[],
+  teamId: string,
 ): Promise<void> {
   if (transactionIds.length === 0) return;
 
   await db
     .update(transactions)
     .set({ status: "exported" })
-    .where(inArray(transactions.id, transactionIds));
+    .where(
+      and(
+        inArray(transactions.id, transactionIds),
+        eq(transactions.teamId, teamId),
+      ),
+    );
 }
 
 /**

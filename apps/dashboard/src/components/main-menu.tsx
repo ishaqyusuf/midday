@@ -5,20 +5,10 @@ import { Icons } from "@midday/ui/icons";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useChatInterface } from "@/hooks/use-chat-interface";
-
-// Only prefetch high-traffic routes to reduce unnecessary network requests on load
-const prefetchRoutes = new Set([
-  "/transactions",
-  "/inbox",
-  "/invoices",
-  "/tracker",
-  "/vault",
-  "/apps",
-]);
 
 const icons = {
   "/": () => <Icons.Overview size={20} />,
+  "/reports": () => <Icons.Monitoring size={20} />,
   "/transactions": () => <Icons.Transactions size={20} />,
   "/invoices": () => <Icons.Invoice size={20} />,
   "/tracker": () => <Icons.Tracker size={20} />,
@@ -33,6 +23,10 @@ const items = [
   {
     path: "/",
     name: "Overview",
+  },
+  {
+    path: "/reports",
+    name: "Reports",
   },
   {
     path: "/transactions",
@@ -135,7 +129,7 @@ const ChildItem = ({
   return (
     <Link
       href={child.path}
-      prefetch={false}
+      prefetch
       onClick={() => onSelect?.()}
       className="block group/child"
     >
@@ -197,7 +191,7 @@ const Item = ({
     <div className="group">
       <Link
         href={item.path}
-        prefetch={prefetchRoutes.has(item.path)}
+        prefetch
         onClick={() => onSelect?.()}
         className="group"
       >
@@ -285,7 +279,6 @@ type Props = {
 
 export function MainMenu({ onSelect, isExpanded = false }: Props) {
   const pathname = usePathname();
-  const { isChatPage } = useChatInterface();
   const part = pathname?.split("/")[1];
   const [expandedItem, setExpandedItem] = useState<string | null>(null);
 
@@ -295,18 +288,13 @@ export function MainMenu({ onSelect, isExpanded = false }: Props) {
   }, [isExpanded]);
 
   return (
-    <div className="mt-6 w-full">
+    <div className="mt-4 w-full">
       <nav className="w-full">
         <div className="flex flex-col gap-2">
           {items.map((item) => {
-            // Check if current path matches item path or is a child of it
-            // Chat pages (/chat/*) should highlight Overview
             const isActive =
               (pathname === "/" && item.path === "/") ||
-              (item.path === "/" && isChatPage) ||
-              (pathname !== "/" &&
-                !isChatPage &&
-                item.path.startsWith(`/${part}`));
+              (pathname !== "/" && item.path.startsWith(`/${part}`));
 
             return (
               <Item

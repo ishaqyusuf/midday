@@ -27,7 +27,7 @@ async function listBankSchedulers() {
         perPage: 200,
       });
 
-      if (!schedulesPage || !schedulesPage.data) {
+      if (!schedulesPage?.data) {
         break;
       }
 
@@ -127,5 +127,5 @@ if (require.main === module) {
   main();
 }
 
-export { listBankSchedulers };
 export type { SchedulerInfo };
+export { listBankSchedulers };

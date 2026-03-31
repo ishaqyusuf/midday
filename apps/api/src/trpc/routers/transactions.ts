@@ -1,7 +1,10 @@
+import { anthropic } from "@ai-sdk/anthropic";
 import {
   createTransactionSchema,
   deleteTransactionsSchema,
   exportTransactionsSchema,
+  generateCsvMappingResponseSchema,
+  generateCsvMappingSchema,
   getSimilarTransactionsSchema,
   getTransactionByIdSchema,
   getTransactionsSchema,
@@ -15,6 +18,7 @@ import { createTRPCRouter, protectedProcedure } from "@api/trpc/init";
 import {
   createTransaction,
   deleteTransactions,
+  getBankAccountById,
   getSimilarTransactions,
   getTransactionById,
   getTransactions,
@@ -25,8 +29,27 @@ import {
   updateTransaction,
   updateTransactions,
 } from "@midday/db/queries";
-import { formatAmountValue } from "@midday/import";
+import {
+  buildCsvMappingPrompt,
+  compactSampleRows,
+  formatAmountValue,
+  selectPromptColumns,
+} from "@midday/import";
 import { triggerJob } from "@midday/job-client";
+import { TRPCError } from "@trpc/server";
+import { generateObject } from "ai";
+
+const csvMappingInFlight = new Map<
+  string,
+  Promise<{
+    date?: string;
+    description?: string;
+    counterparty?: string;
+    amount?: string;
+    balance?: string;
+    currency?: string;
+  }>
+>();
 
 export const transactionsRouter = createTRPCRouter({
   get: protectedProcedure
@@ -112,15 +135,23 @@ export const transactionsRouter = createTRPCRouter({
         teamId: teamId!,
       });
 
-      // Trigger embedding for the newly created manual transaction
       if (transaction?.id) {
         await triggerJob(
-          "embed-transaction",
+          "enrich-transactions",
           {
             transactionIds: [transaction.id],
             teamId: teamId!,
           },
           "transactions",
+        );
+
+        await triggerJob(
+          "match-transactions-bidirectional",
+          {
+            teamId: teamId!,
+            newTransactionIds: [transaction.id],
+          },
+          "inbox",
         );
       }
 
@@ -139,6 +170,7 @@ export const transactionsRouter = createTRPCRouter({
         {
           teamId,
           userId: session.user.id,
+          userEmail: session.user.email ?? undefined,
           locale: input.locale,
           transactionIds: input.transactionIds,
           dateFormat: input.dateFormat,
@@ -155,17 +187,36 @@ export const transactionsRouter = createTRPCRouter({
         throw new Error("Team not found");
       }
 
-      // Update currency for account
-      const balance = input.currentBalance
-        ? formatAmountValue({ amount: input.currentBalance })
-        : null;
-
-      await updateBankAccount(db, {
+      // Only update balance/currency for manual accounts (backfill into connected accounts keeps bank-synced balance)
+      const account = await getBankAccountById(db, {
         id: input.bankAccountId,
         teamId,
-        currency: input.currency,
-        balance: balance ?? undefined,
       });
+
+      if (!account) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Bank account not found",
+        });
+      }
+
+      if (account.manual) {
+        const parsedBalance = input.currentBalance
+          ? formatAmountValue({ amount: input.currentBalance })
+          : null;
+
+        const balance =
+          parsedBalance !== null && Number.isFinite(parsedBalance)
+            ? parsedBalance
+            : null;
+
+        await updateBankAccount(db, {
+          id: input.bankAccountId,
+          teamId,
+          currency: input.currency,
+          balance: balance ?? undefined,
+        });
+      }
 
       return triggerJob(
         "import-transactions",
@@ -194,5 +245,54 @@ export const transactionsRouter = createTRPCRouter({
       });
 
       return { success: true };
+    }),
+
+  generateCsvMapping: protectedProcedure
+    .input(generateCsvMappingSchema)
+    .mutation(async ({ input, ctx: { teamId } }) => {
+      const requestStartedAt = Date.now();
+      const promptColumns = selectPromptColumns(input.fieldColumns);
+      const sampleRows = compactSampleRows(input.firstRows, promptColumns);
+      const prompt = buildCsvMappingPrompt(promptColumns, sampleRows);
+      const requestKey = JSON.stringify({
+        teamId,
+        columns: promptColumns,
+        sampleRows,
+      });
+
+      const inFlight = csvMappingInFlight.get(requestKey);
+      if (inFlight) {
+        console.info("CSV mapping reusing in-flight request", {
+          mode: "object",
+          columnsCount: promptColumns.length,
+          sampleRowsCount: sampleRows.length,
+        });
+        return inFlight;
+      }
+
+      const mappingPromise = (async () => {
+        try {
+          const { object } = await generateObject({
+            model: anthropic("claude-3-haiku-20240307"),
+            schema: generateCsvMappingResponseSchema,
+            prompt,
+          });
+
+          return generateCsvMappingResponseSchema.parse(object);
+        } catch (error) {
+          console.error("Error generating CSV mapping:", {
+            mode: "object",
+            durationMs: Date.now() - requestStartedAt,
+            error,
+          });
+          throw error;
+        } finally {
+          csvMappingInFlight.delete(requestKey);
+        }
+      })();
+
+      csvMappingInFlight.set(requestKey, mappingPromise);
+
+      return mappingPromise;
     }),
 });

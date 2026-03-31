@@ -1,28 +1,28 @@
 "use client";
 
-import { useChatActions } from "@ai-sdk-tools/store";
 import { Button } from "@midday/ui/button";
 import { Icons } from "@midday/ui/icons";
-import { useRouter } from "next/navigation";
+import { useChatState } from "@/components/chat/chat-context";
 
-export function NewChatButton() {
-  const router = useRouter();
-  const { reset } = useChatActions();
-
-  const handleNewChat = () => {
-    reset();
-    router.push("/");
-  };
+export function NewChatButton({
+  variant = "ghost",
+}: {
+  variant?: "ghost" | "outline";
+}) {
+  const { setMessages, setInputValue, setChatTitle } = useChatState();
 
   return (
     <Button
-      type="button"
-      onClick={handleNewChat}
-      variant="outline"
+      variant={variant}
       size="icon"
-      title="New chat"
+      data-track="Assistant New Chat"
+      onClick={() => {
+        setMessages([]);
+        setInputValue("");
+        setChatTitle(null);
+      }}
     >
-      <Icons.Add size={16} />
+      <Icons.Add className="size-4" />
     </Button>
   );
 }

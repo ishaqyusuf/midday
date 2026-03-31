@@ -72,6 +72,11 @@ export const connectionStatusEnum = pgEnum("connection_status", [
   "unknown",
 ]);
 
+export const institutionStatusEnum = pgEnum("institution_status", [
+  "active",
+  "removed",
+]);
+
 export const documentProcessingStatusEnum = pgEnum(
   "document_processing_status",
   ["pending", "processing", "completed", "failed"],
@@ -175,6 +180,7 @@ export const plansEnum = pgEnum("plans", ["trial", "starter", "pro"]);
 export const subscriptionStatusEnum = pgEnum("subscription_status", [
   "active",
   "past_due",
+  "trialing",
 ]);
 export const reportTypesEnum = pgEnum("reportTypes", [
   "profit",
@@ -300,9 +306,6 @@ export const documentTagEmbeddings = pgTable(
     model: text().notNull().default("gemini-embedding-001"),
   },
   (table) => [
-    index("document_tag_embeddings_idx")
-      .using("hnsw", table.embedding.asc().nullsLast().op("vector_cosine_ops"))
-      .with({ m: "16", ef_construction: "64" }),
     pgPolicy("Enable insert for authenticated users only", {
       as: "permissive",
       for: "insert",
@@ -327,11 +330,6 @@ export const transactionCategoryEmbeddings = pgTable(
       .notNull(),
   },
   (table) => [
-    // Vector similarity index for fast cosine similarity search
-    index("transaction_category_embeddings_vector_idx")
-      .using("hnsw", table.embedding.asc().nullsLast().op("vector_cosine_ops"))
-      .with({ m: "16", ef_construction: "64" }),
-    // System categories index for filtering
     index("transaction_category_embeddings_system_idx").using(
       "btree",
       table.system.asc().nullsLast().op("bool_ops"),
@@ -425,9 +423,9 @@ export const transactions = pgTable(
       "btree",
       table.name.asc().nullsLast().op("text_ops"),
     ),
-    index("idx_transactions_name_trigram").using(
+    index("idx_transactions_merchant_name_trgm").using(
       "gin",
-      table.name.asc().nullsLast().op("gin_trgm_ops"),
+      table.merchantName.asc().nullsLast().op("gin_trgm_ops"),
     ),
     index("idx_transactions_team_id_date_name").using(
       "btree",
@@ -469,6 +467,14 @@ export const transactions = pgTable(
       "btree",
       table.teamId.asc().nullsLast().op("uuid_ops"),
     ),
+    index("idx_transactions_reports")
+      .using(
+        "btree",
+        table.teamId.asc().nullsLast().op("uuid_ops"),
+        table.date.asc().nullsLast().op("date_ops"),
+        table.categorySlug.asc().nullsLast().op("text_ops"),
+      )
+      .where(sql`internal = false AND status != 'excluded'`),
     foreignKey({
       columns: [table.assignedId],
       foreignColumns: [users.id],
@@ -1000,6 +1006,22 @@ export const invoices = pgTable(
       .on(table.invoiceRecurringId, table.recurringSequence)
       .where(sql`invoice_recurring_id IS NOT NULL`),
     unique("invoices_scheduled_job_id_key").on(table.scheduledJobId),
+    // Invoice page query indexes
+    index("invoices_team_due_date_idx")
+      .on(table.teamId, table.dueDate.desc())
+      .where(sql`due_date IS NOT NULL`),
+    index("invoices_team_status_due_date_idx").on(
+      table.teamId,
+      table.status,
+      table.dueDate.desc(),
+    ),
+    index("invoices_team_customer_id_idx")
+      .on(table.teamId, table.customerId)
+      .where(sql`customer_id IS NOT NULL`),
+    index("invoices_customer_id_idx")
+      .on(table.customerId)
+      .where(sql`customer_id IS NOT NULL`),
+    index("invoices_team_created_at_idx").on(table.teamId, table.createdAt),
     pgPolicy("Invoices can be handled by a member of the team", {
       as: "permissive",
       for: "all",
@@ -1333,6 +1355,36 @@ export const reports = pgTable(
   ],
 );
 
+export const institutions = pgTable(
+  "institutions",
+  {
+    id: text().primaryKey().notNull(),
+    name: text().notNull(),
+    logo: text(),
+    provider: bankProvidersEnum().notNull(),
+    countries: text().array().notNull(),
+    availableHistory: integer("available_history"),
+    maximumConsentValidity: integer("maximum_consent_validity"),
+    popularity: integer().default(0).notNull(),
+    type: text(),
+    status: institutionStatusEnum().default("active").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("institutions_country_idx").using("gin", table.countries),
+    index("institutions_name_trgm_idx").using(
+      "gin",
+      sql`${table.name} gin_trgm_ops`,
+    ),
+    index("institutions_status_idx").on(table.status),
+  ],
+);
+
 export const bankConnections = pgTable(
   "bank_connections",
   {
@@ -1618,6 +1670,8 @@ export const teams = pgTable(
     exportSettings: jsonb("export_settings"),
     stripeAccountId: text("stripe_account_id"),
     stripeConnectStatus: text("stripe_connect_status"),
+    companyType: text("company_type"),
+    heardAbout: text("heard_about"),
   },
   (table) => [
     unique("teams_inbox_id_key").on(table.inboxId),
@@ -2235,6 +2289,10 @@ export const inbox = pgTable(
       "btree",
       table.groupedInboxId.asc().nullsLast().op("uuid_ops"),
     ),
+    index("idx_inbox_display_name_trgm").using(
+      "gin",
+      table.displayName.asc().nullsLast().op("gin_trgm_ops"),
+    ),
     // Composite index for insights activity queries
     index("inbox_team_status_created_at_idx").on(
       table.teamId,
@@ -2326,88 +2384,6 @@ export const inboxBlocklist = pgTable(
   ],
 );
 
-export const transactionEmbeddings = pgTable(
-  "transaction_embeddings",
-  {
-    id: uuid().defaultRandom().primaryKey().notNull(),
-    transactionId: uuid("transaction_id").notNull(),
-    teamId: uuid("team_id").notNull(),
-    embedding: vector("embedding", { dimensions: 768 }),
-    sourceText: text("source_text").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
-      .defaultNow()
-      .notNull(),
-    model: text("model").notNull().default("gemini-embedding-001"),
-  },
-  (table) => [
-    index("transaction_embeddings_transaction_id_idx").using(
-      "btree",
-      table.transactionId.asc().nullsLast().op("uuid_ops"),
-    ),
-    index("transaction_embeddings_team_id_idx").using(
-      "btree",
-      table.teamId.asc().nullsLast().op("uuid_ops"),
-    ),
-    // Vector similarity index for fast cosine similarity searches
-    index("transaction_embeddings_vector_idx").using(
-      "hnsw",
-      table.embedding.op("vector_cosine_ops"),
-    ),
-    foreignKey({
-      columns: [table.transactionId],
-      foreignColumns: [transactions.id],
-      name: "transaction_embeddings_transaction_id_fkey",
-    }).onDelete("cascade"),
-    foreignKey({
-      columns: [table.teamId],
-      foreignColumns: [teams.id],
-      name: "transaction_embeddings_team_id_fkey",
-    }).onDelete("cascade"),
-    unique("transaction_embeddings_unique").on(table.transactionId),
-  ],
-);
-
-export const inboxEmbeddings = pgTable(
-  "inbox_embeddings",
-  {
-    id: uuid().defaultRandom().primaryKey().notNull(),
-    inboxId: uuid("inbox_id").notNull(),
-    teamId: uuid("team_id").notNull(),
-    embedding: vector("embedding", { dimensions: 768 }),
-    sourceText: text("source_text").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
-      .defaultNow()
-      .notNull(),
-    model: text("model").notNull().default("gemini-embedding-001"),
-  },
-  (table) => [
-    index("inbox_embeddings_inbox_id_idx").using(
-      "btree",
-      table.inboxId.asc().nullsLast().op("uuid_ops"),
-    ),
-    index("inbox_embeddings_team_id_idx").using(
-      "btree",
-      table.teamId.asc().nullsLast().op("uuid_ops"),
-    ),
-    // Vector similarity index for fast cosine similarity searches
-    index("inbox_embeddings_vector_idx").using(
-      "hnsw",
-      table.embedding.op("vector_cosine_ops"),
-    ),
-    foreignKey({
-      columns: [table.inboxId],
-      foreignColumns: [inbox.id],
-      name: "inbox_embeddings_inbox_id_fkey",
-    }).onDelete("cascade"),
-    foreignKey({
-      columns: [table.teamId],
-      foreignColumns: [teams.id],
-      name: "inbox_embeddings_team_id_fkey",
-    }).onDelete("cascade"),
-    unique("inbox_embeddings_unique").on(table.inboxId),
-  ],
-);
-
 export const transactionMatchSuggestions = pgTable(
   "transaction_match_suggestions",
   {
@@ -2432,10 +2408,6 @@ export const transactionMatchSuggestions = pgTable(
     amountScore: numericCasted("amount_score", { precision: 4, scale: 3 }),
     currencyScore: numericCasted("currency_score", { precision: 4, scale: 3 }),
     dateScore: numericCasted("date_score", { precision: 4, scale: 3 }),
-    embeddingScore: numericCasted("embedding_score", {
-      precision: 4,
-      scale: 3,
-    }),
     nameScore: numericCasted("name_score", { precision: 4, scale: 3 }),
 
     // Match context
@@ -2476,6 +2448,12 @@ export const transactionMatchSuggestions = pgTable(
       table.transactionId.asc().nullsLast().op("uuid_ops"),
       table.teamId.asc().nullsLast().op("uuid_ops"),
       table.status.asc().nullsLast().op("text_ops"),
+    ),
+    index("transaction_match_suggestions_team_status_created_idx").using(
+      "btree",
+      table.teamId.asc().nullsLast().op("uuid_ops"),
+      table.status.asc().nullsLast().op("text_ops"),
+      table.createdAt.desc().nullsLast(),
     ),
     foreignKey({
       columns: [table.inboxId],
@@ -2613,7 +2591,7 @@ export const usersOnTeam = pgTable(
 export const transactionCategories = pgTable(
   "transaction_categories",
   {
-    id: uuid().defaultRandom().notNull(),
+    id: uuid().defaultRandom().notNull().unique(),
     name: text().notNull(),
     teamId: uuid("team_id").notNull(),
     color: text(),
@@ -2876,10 +2854,10 @@ export const oauthApplications = pgTable(
     screenshots: text("screenshots").array().default(sql`'{}'::text[]`),
     redirectUris: text("redirect_uris").array().notNull(),
     clientId: text("client_id").notNull().unique(),
-    clientSecret: text("client_secret").notNull(),
+    clientSecret: text("client_secret"),
     scopes: text("scopes").array().notNull().default(sql`'{}'::text[]`),
-    teamId: uuid("team_id").notNull(),
-    createdBy: uuid("created_by").notNull(),
+    teamId: uuid("team_id"),
+    createdBy: uuid("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
       .notNull()
       .defaultNow(),

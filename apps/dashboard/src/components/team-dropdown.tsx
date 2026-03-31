@@ -1,5 +1,6 @@
 "use client";
 
+import { LogEvents } from "@midday/events/events";
 import { Avatar, AvatarFallback, AvatarImageNext } from "@midday/ui/avatar";
 import { Button } from "@midday/ui/button";
 import { Icons } from "@midday/ui/icons";
@@ -10,6 +11,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@midday/ui/tooltip";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
@@ -42,6 +44,7 @@ export function TeamDropdown({ isExpanded = false }: Props) {
   const ref = useRef<HTMLDivElement>(null);
   const { data: user } = useUserQuery();
   const trpc = useTRPC();
+  const { track } = useOpenPanel();
   const queryClient = useQueryClient();
 
   const [selectedId, setSelectedId] = useState<string | undefined>(
@@ -51,7 +54,7 @@ export function TeamDropdown({ isExpanded = false }: Props) {
   const [isChangingTeam, setIsChangingTeam] = useState(false);
 
   const changeTeamMutation = useMutation(
-    trpc.user.update.mutationOptions({
+    trpc.user.switchTeam.mutationOptions({
       onSuccess: async () => {
         await queryClient.invalidateQueries();
         setIsChangingTeam(false);
@@ -103,6 +106,7 @@ export function TeamDropdown({ isExpanded = false }: Props) {
     setSelectedId(teamId);
     setActive(false);
 
+    track(LogEvents.ChangeTeam.name);
     changeTeamMutation.mutate({ teamId });
   };
 
@@ -126,7 +130,7 @@ export function TeamDropdown({ isExpanded = false }: Props) {
                     mass: 1.2,
                   }}
                 >
-                  <Link href="/teams/create" onClick={() => setActive(false)}>
+                  <Link href="/onboarding" onClick={() => setActive(false)}>
                     <Button
                       className="w-[32px] h-[32px] bg-background"
                       size="icon"

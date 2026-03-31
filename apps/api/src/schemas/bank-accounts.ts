@@ -5,6 +5,9 @@ export const getBankAccountsSchema = z
     enabled: z
       .boolean()
       .optional()
+      .describe(
+        "Filter by enabled status (true = active accounts, false = disabled)",
+      )
       .openapi({
         description: "Whether the bank account is enabled.",
         param: {
@@ -14,6 +17,9 @@ export const getBankAccountsSchema = z
     manual: z
       .boolean()
       .optional()
+      .describe(
+        "Filter by manual status (true = manually created, false = bank-synced)",
+      )
       .openapi({
         description: "Whether the bank account is a manual account.",
         param: {
@@ -114,6 +120,14 @@ export const getBankAccountDetailsSchema = z.object({
   id: z.string().uuid().openapi({
     description:
       "The unique identifier of the bank account to get details for.",
+    example: "b7e6c2a0-1f2d-4c3b-9a8e-123456789abc",
+  }),
+});
+
+export const getTransactionCountSchema = z.object({
+  id: z.string().uuid().openapi({
+    description:
+      "The unique identifier of the bank account to get transaction count for.",
     example: "b7e6c2a0-1f2d-4c3b-9a8e-123456789abc",
   }),
 });

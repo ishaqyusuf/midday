@@ -84,17 +84,7 @@ export function InboxDetails() {
   );
 
   const retryMatchingMutation = useMutation(
-    trpc.inbox.retryMatching.mutationOptions({
-      onSuccess: () => {
-        // Refresh queries after retry matching completes
-        queryClient.invalidateQueries({
-          queryKey: trpc.inbox.getById.queryKey({ id: data?.id }),
-        });
-        queryClient.invalidateQueries({
-          queryKey: trpc.inbox.get.infiniteQueryKey(),
-        });
-      },
-    }),
+    trpc.inbox.retryMatching.mutationOptions(),
   );
 
   const blockSenderMutation = useMutation(
@@ -188,12 +178,21 @@ export function InboxDetails() {
 
   const handleRetryMatching = () => {
     if (data?.id) {
-      updateInboxMutation.mutate({
-        id: data.id,
-        status: "analyzing",
-      });
+      const queryKey = trpc.inbox.getById.queryKey({ id: data.id });
+      const previousData = queryClient.getQueryData(queryKey);
 
-      retryMatchingMutation.mutate({ id: data.id });
+      queryClient.setQueryData(queryKey, (old) =>
+        old ? { ...old, status: "analyzing" as const } : old,
+      );
+
+      retryMatchingMutation.mutate(
+        { id: data.id },
+        {
+          onError: () => {
+            queryClient.setQueryData(queryKey, previousData);
+          },
+        },
+      );
     }
   };
 
@@ -293,12 +292,14 @@ export function InboxDetails() {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
                 <DropdownMenuItem
-                  onClick={() =>
+                  onClick={() => {
+                    if (!data?.id) return;
+
                     updateInboxMutation.mutate({
-                      id: data?.id!,
-                      status: data?.status === "done" ? "pending" : "done",
-                    })
-                  }
+                      id: data.id,
+                      status: data.status === "done" ? "pending" : "done",
+                    });
+                  }}
                 >
                   {data?.status === "done" ? (
                     <>
@@ -581,12 +582,14 @@ export function InboxDetails() {
         </div>
       )}
 
-      <DeleteInboxDialog
-        id={data?.id!}
-        filePath={data?.filePath ?? null}
-        isOpen={showDeleteDialog}
-        onOpenChange={setShowDeleteDialog}
-      />
+      {data?.id && (
+        <DeleteInboxDialog
+          id={data.id}
+          filePath={data.filePath ?? null}
+          isOpen={showDeleteDialog}
+          onOpenChange={setShowDeleteDialog}
+        />
+      )}
     </div>
   );
 }

@@ -108,11 +108,46 @@ export const updateTeamByIdSchema = z.object({
       includeCSV: z.boolean(),
       includeXLSX: z.boolean(),
       sendEmail: z.boolean(),
+      sendCopyToMe: z.boolean().optional(),
       accountantEmail: z.string().optional(),
     })
     .optional()
     .openapi({
       description: "Export settings for transactions",
+    }),
+  companyType: z
+    .enum([
+      "freelancer",
+      "solo_founder",
+      "small_team",
+      "startup",
+      "agency",
+      "ecommerce",
+      "creator",
+      "non_profit",
+      "accountant",
+      "exploring",
+    ])
+    .optional()
+    .openapi({
+      description: "Type of company or team",
+      example: "solo_founder",
+    }),
+  heardAbout: z
+    .enum([
+      "twitter",
+      "youtube",
+      "friend",
+      "google",
+      "blog",
+      "podcast",
+      "github",
+      "other",
+    ])
+    .optional()
+    .openapi({
+      description: "How the user heard about the product",
+      example: "twitter",
     }),
 });
 
@@ -146,6 +181,38 @@ export const createTeamSchema = z.object({
     description: "URL to the team's logo image",
     example: "https://cdn.midday.ai/logos/acme-corp.png",
   }),
+  companyType: z
+    .enum([
+      "freelancer",
+      "solo_founder",
+      "small_team",
+      "startup",
+      "agency",
+      "ecommerce",
+      "creator",
+      "non_profit",
+      "accountant",
+      "exploring",
+    ])
+    .openapi({
+      description: "Type of company or team",
+      example: "solo_founder",
+    }),
+  heardAbout: z
+    .enum([
+      "twitter",
+      "youtube",
+      "friend",
+      "google",
+      "blog",
+      "podcast",
+      "github",
+      "other",
+    ])
+    .openapi({
+      description: "How the user heard about the product",
+      example: "twitter",
+    }),
   switchTeam: z.boolean().optional().default(false).openapi({
     description:
       "Whether to automatically switch the user to the newly created team",

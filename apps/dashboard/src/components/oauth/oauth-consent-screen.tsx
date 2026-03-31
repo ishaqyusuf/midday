@@ -23,10 +23,11 @@ import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
 import { AlertTriangle, Check, X } from "lucide-react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useOAuthParams } from "@/hooks/use-oauth-params";
 import { useTeamQuery } from "@/hooks/use-team";
 import { useTRPC } from "@/trpc/client";
+import { getKnownClient } from "@/utils/known-oauth-clients";
 import { getScopeDescription } from "@/utils/scopes";
 
 export function OAuthConsentScreen() {
@@ -44,6 +45,7 @@ export function OAuthConsentScreen() {
   const trpc = useTRPC();
   const { data: currentTeam } = useTeamQuery();
   const [selectedTeamId, setSelectedTeamId] = useState<string>("");
+  const [authorized, setAuthorized] = useState(false);
 
   // Preselect the current team when data is available
   useEffect(() => {
@@ -61,11 +63,17 @@ export function OAuthConsentScreen() {
     }),
   );
 
+  const knownClient = useMemo(
+    () => (applicationInfo ? getKnownClient(applicationInfo.name) : null),
+    [applicationInfo?.name],
+  );
+
   const { data: teams } = useSuspenseQuery(trpc.team.list.queryOptions());
 
   const authorizeMutation = useMutation(
     trpc.oauthApplications.authorize.mutationOptions({
       onSuccess: (data) => {
+        setAuthorized(true);
         window.location.href = data.redirect_url;
       },
       onError: (error) => {
@@ -122,6 +130,54 @@ export function OAuthConsentScreen() {
     });
   };
 
+  if (authorized) {
+    return (
+      <div className="flex items-center justify-center min-h-screen p-4 bg-background">
+        <Card className="w-full max-w-[448px]">
+          <CardHeader className="text-center pb-8">
+            <div className="flex items-center justify-center gap-4 mb-8">
+              <div className="w-16 h-16 rounded-full bg-background border border-border flex items-center justify-center overflow-hidden">
+                {applicationInfo?.logoUrl ? (
+                  <Image
+                    src={applicationInfo.logoUrl}
+                    alt={applicationInfo.name}
+                    width={40}
+                    height={40}
+                    className="object-contain"
+                  />
+                ) : knownClient?.icon ? (
+                  knownClient.icon
+                ) : (
+                  <div className="w-8 h-8 bg-muted rounded-full" />
+                )}
+              </div>
+              <Icons.SyncAlt className="size-4 text-[#666666]" />
+              <div className="w-16 h-16 rounded-full bg-background border border-border flex items-center justify-center overflow-hidden">
+                <Icons.LogoSmall className="h-8 w-8" />
+              </div>
+            </div>
+            <CardTitle className="text-lg mb-2 font-serif">
+              Successfully connected
+            </CardTitle>
+            <CardDescription className="text-sm text-muted-foreground text-center">
+              {applicationInfo?.name} now has access to your Midday team. You
+              can close this window and return to {applicationInfo?.name}.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button
+              variant="outline"
+              onClick={() => window.close()}
+              className="w-full"
+            >
+              Close window
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   if (!applicationInfo) {
     return (
       <div className="flex items-center justify-center min-h-screen p-4 bg-background">
@@ -166,6 +222,8 @@ export function OAuthConsentScreen() {
                   height={40}
                   className="object-contain"
                 />
+              ) : knownClient?.icon ? (
+                knownClient.icon
               ) : (
                 <div className="w-8 h-8 bg-muted rounded-full" />
               )}
@@ -184,21 +242,20 @@ export function OAuthConsentScreen() {
           <CardDescription className="text-sm text-muted-foreground text-center">
             <span className="flex items-center justify-center gap-1 text-[#878787] text-sm mb-8">
               Built by{" "}
-              {applicationInfo.website ? (
-                <a
-                  href={applicationInfo.website}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 underline"
-                >
-                  {applicationInfo.developerName ||
-                    new URL(applicationInfo.website).hostname}
-                </a>
-              ) : (
-                <span className="underline">
-                  {applicationInfo.developerName || "Unknown"}
-                </span>
-              )}
+              <a
+                href={
+                  applicationInfo.website ||
+                  knownClient?.website ||
+                  "https://midday.ai"
+                }
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 underline"
+              >
+                {applicationInfo.developerName ||
+                  knownClient?.developerName ||
+                  "Midday"}
+              </a>
             </span>
           </CardDescription>
         </CardHeader>

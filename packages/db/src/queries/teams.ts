@@ -1,18 +1,28 @@
-import { chatCache } from "@midday/cache/chat-cache";
-import { teamCache } from "@midday/cache/team-cache";
-import { teamPermissionsCache } from "@midday/cache/team-permissions-cache";
 import {
   CATEGORIES,
   getTaxRateForCategory,
   getTaxTypeForCountry,
 } from "@midday/categories";
+import { createLoggerWithContext } from "@midday/logger";
 import { subDays } from "date-fns";
-import { and, eq, gt, gte, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import {
+  and,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { Database } from "../client";
 import {
   bankConnections,
+  invoices,
   teams,
   transactionCategories,
+  transactions,
   users,
   usersOnTeam,
 } from "../schema";
@@ -40,7 +50,8 @@ export const getTeamById = async (db: Database, id: string) => {
       email: teams.email,
       inboxId: teams.inboxId,
       plan: teams.plan,
-      // subscriptionStatus: teams.subscriptionStatus,
+      subscriptionStatus: teams.subscriptionStatus,
+      canceledAt: teams.canceledAt,
       baseCurrency: teams.baseCurrency,
       countryCode: teams.countryCode,
       fiscalYearStartMonth: teams.fiscalYearStartMonth,
@@ -116,7 +127,7 @@ export const updateTeamById = async (
       email: teams.email,
       inboxId: teams.inboxId,
       plan: teams.plan,
-      // subscriptionStatus: teams.subscriptionStatus,
+      subscriptionStatus: teams.subscriptionStatus,
       baseCurrency: teams.baseCurrency,
       countryCode: teams.countryCode,
       fiscalYearStartMonth: teams.fiscalYearStartMonth,
@@ -133,6 +144,8 @@ type CreateTeamParams = {
   countryCode?: string;
   fiscalYearStartMonth?: number | null;
   logoUrl?: string;
+  companyType?: string;
+  heardAbout?: string;
   switchTeam?: boolean;
 };
 
@@ -218,38 +231,21 @@ async function createSystemCategoriesForTeam(
 export const createTeam = async (db: Database, params: CreateTeamParams) => {
   const startTime = Date.now();
   const teamCreationId = `team_creation_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  const logger = createLoggerWithContext(teamCreationId);
 
-  console.log(
-    `[${teamCreationId}] Starting team creation for user ${params.userId}`,
-    {
-      teamName: params.name,
-      baseCurrency: params.baseCurrency,
-      countryCode: params.countryCode,
-      email: params.email,
-      switchTeam: params.switchTeam,
-      timestamp: new Date().toISOString(),
-    },
-  );
+  logger.info(`Starting team creation for user ${params.userId}`, {
+    teamName: params.name,
+    baseCurrency: params.baseCurrency,
+    countryCode: params.countryCode,
+    email: params.email,
+    switchTeam: params.switchTeam,
+  });
 
   // Use transaction to ensure atomicity and prevent race conditions
   const teamId = await db.transaction(async (tx) => {
     try {
-      // Check if user already has teams to prevent duplicate creation
-      const existingTeams = await tx
-        .select({ id: teams.id, name: teams.name })
-        .from(usersOnTeam)
-        .innerJoin(teams, eq(teams.id, usersOnTeam.teamId))
-        .where(eq(usersOnTeam.userId, params.userId));
-
-      console.log(
-        `[${teamCreationId}] User existing teams count: ${existingTeams.length}`,
-        {
-          existingTeams: existingTeams.map((t) => ({ id: t.id, name: t.name })),
-        },
-      );
-
       // Create the team
-      console.log(`[${teamCreationId}] Creating team record`);
+      logger.info("Creating team record");
       const [newTeam] = await tx
         .insert(teams)
         .values({
@@ -259,6 +255,8 @@ export const createTeam = async (db: Database, params: CreateTeamParams) => {
           fiscalYearStartMonth: params.fiscalYearStartMonth,
           logoUrl: params.logoUrl,
           email: params.email,
+          companyType: params.companyType,
+          heardAbout: params.heardAbout,
         })
         .returning({ id: teams.id });
 
@@ -266,12 +264,10 @@ export const createTeam = async (db: Database, params: CreateTeamParams) => {
         throw new Error("Failed to create team.");
       }
 
-      console.log(
-        `[${teamCreationId}] Team created successfully with ID: ${newTeam.id}`,
-      );
+      logger.info(`Team created successfully with ID: ${newTeam.id}`);
 
       // Add user to team membership (atomic with team creation)
-      console.log(`[${teamCreationId}] Adding user to team membership`);
+      logger.info("Adding user to team membership");
       await tx.insert(usersOnTeam).values({
         userId: params.userId,
         teamId: newTeam.id,
@@ -279,13 +275,13 @@ export const createTeam = async (db: Database, params: CreateTeamParams) => {
       });
 
       // Create system categories for the new team (atomic)
-      console.log(`[${teamCreationId}] Creating system categories`);
+      logger.info("Creating system categories");
       // @ts-expect-error - tx is a PgTransaction
       await createSystemCategoriesForTeam(tx, newTeam.id, params.countryCode);
 
       // Optionally switch user to the new team (atomic)
       if (params.switchTeam) {
-        console.log(`[${teamCreationId}] Switching user to new team`);
+        logger.info("Switching user to new team");
         await tx
           .update(users)
           .set({ teamId: newTeam.id })
@@ -293,31 +289,25 @@ export const createTeam = async (db: Database, params: CreateTeamParams) => {
       }
 
       const duration = Date.now() - startTime;
-      console.log(
-        `[${teamCreationId}] Team creation completed successfully in ${duration}ms`,
-        {
-          teamId: newTeam.id,
-          duration,
-        },
-      );
+      logger.info(`Team creation completed successfully in ${duration}ms`, {
+        teamId: newTeam.id,
+        duration,
+      });
 
       return newTeam.id;
     } catch (error) {
       const duration = Date.now() - startTime;
-      console.error(
-        `[${teamCreationId}] Team creation failed after ${duration}ms:`,
-        {
-          error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined,
-          params: {
-            userId: params.userId,
-            teamName: params.name,
-            baseCurrency: params.baseCurrency,
-            countryCode: params.countryCode,
-          },
-          duration,
+      logger.error(`Team creation failed after ${duration}ms`, {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        params: {
+          userId: params.userId,
+          teamName: params.name,
+          baseCurrency: params.baseCurrency,
+          countryCode: params.countryCode,
         },
-      );
+        duration,
+      });
 
       // Re-throw with more specific error messages
       if (error instanceof Error) {
@@ -327,12 +317,6 @@ export const createTeam = async (db: Database, params: CreateTeamParams) => {
       throw new Error("Failed to create team due to an unexpected error.");
     }
   });
-
-  // If team switching was enabled, invalidate the team permissions cache
-  if (params.switchTeam) {
-    const cacheKey = `user:${params.userId}:team`;
-    await teamPermissionsCache.delete(cacheKey);
-  }
 
   return teamId;
 };
@@ -393,10 +377,6 @@ export async function leaveTeam(db: Database, params: LeaveTeamParams) {
     )
     .returning();
 
-  // Invalidate the team permissions cache since teamId was set to null
-  const cacheKey = `user:${params.userId}:team`;
-  await teamPermissionsCache.delete(cacheKey);
-
   return deleted;
 }
 
@@ -425,28 +405,16 @@ export async function deleteTeam(db: Database, params: DeleteTeamParams) {
       id: teams.id,
     });
 
-  // Invalidate caches for all team members after successful deletion
-  // This prevents stale cache data when users create new teams after deleting their only team
-  // Cache invalidation errors are non-fatal - log but don't throw
-  try {
-    await Promise.all([
-      chatCache.invalidateTeamContext(params.teamId),
-      ...teamMembers.map(async (member) => {
-        if (member.userId) {
-          await Promise.all([
-            teamPermissionsCache.delete(`user:${member.userId}:team`),
-            teamCache.delete(`user:${member.userId}:team:${params.teamId}`),
-            chatCache.invalidateUserContext(member.userId, params.teamId),
-          ]);
-        }
-      }),
-    ]);
-  } catch (error) {
-    // Log but don't fail - team deletion succeeded, cache will expire naturally
-    console.error("Failed to invalidate caches after team deletion:", error);
+  if (!result) {
+    return null;
   }
 
-  return result;
+  return {
+    ...result,
+    memberUserIds: teamMembers
+      .map((m) => m.userId)
+      .filter((id): id is string => id !== null),
+  };
 }
 
 type DeleteTeamMemberParams = {
@@ -524,30 +492,11 @@ type GetAvailablePlansResult = {
 };
 
 export async function getAvailablePlans(
-  db: Database,
-  teamId: string,
+  _db: Database,
+  _teamId: string,
 ): Promise<GetAvailablePlansResult> {
-  const [teamMembersCountResult, bankConnectionsCountResult] =
-    await Promise.all([
-      db.query.usersOnTeam.findMany({
-        where: eq(usersOnTeam.teamId, teamId),
-        columns: { id: true },
-      }),
-      db.query.bankConnections.findMany({
-        where: eq(bankConnections.teamId, teamId),
-        columns: { id: true },
-      }),
-    ]);
-
-  const teamMembersCount = teamMembersCountResult.length;
-  const bankConnectionsCount = bankConnectionsCountResult.length;
-
-  // Can choose starter if team has 2 or fewer members and 2 or fewer bank connections
-  const starter = teamMembersCount <= 2 && bankConnectionsCount <= 2;
-
-  // Can always choose pro plan
   return {
-    starter,
+    starter: true,
     pro: true,
   };
 }
@@ -747,4 +696,64 @@ function getHourInTimezone(date: Date, timezone: string): number {
     // Invalid timezone, fall back to UTC
     return date.getUTCHours();
   }
+}
+
+export async function getTeamOwnerContact(db: Database, teamId: string) {
+  const [result] = await db
+    .select({
+      email: users.email,
+      fullName: users.fullName,
+    })
+    .from(usersOnTeam)
+    .innerJoin(users, eq(usersOnTeam.userId, users.id))
+    .where(and(eq(usersOnTeam.teamId, teamId), eq(usersOnTeam.role, "owner")))
+    .limit(1);
+
+  return result ?? null;
+}
+
+export async function isTeamStillCanceled(db: Database, teamId: string) {
+  const [result] = await db
+    .select({ id: teams.id })
+    .from(teams)
+    .where(and(eq(teams.id, teamId), isNotNull(teams.canceledAt)))
+    .limit(1);
+
+  return !!result;
+}
+
+export async function getTeamsWithBankConnections(db: Database) {
+  const fourteenDaysAgo = subDays(new Date(), 14).toISOString();
+
+  return db
+    .selectDistinct({ id: teams.id })
+    .from(teams)
+    .innerJoin(bankConnections, eq(bankConnections.teamId, teams.id))
+    .where(
+      or(
+        inArray(teams.plan, ["pro", "starter"]),
+        and(
+          eq(teams.plan, "trial"),
+          isNull(teams.canceledAt),
+          gte(teams.createdAt, fourteenDaysAgo),
+        ),
+      ),
+    );
+}
+
+export async function hasTeamData(db: Database, teamId: string) {
+  const [result] = await db
+    .select({
+      hasData: sql<boolean>`EXISTS (
+        SELECT 1 FROM ${transactions} WHERE ${transactions.teamId} = ${teamId}
+      ) OR EXISTS (
+        SELECT 1 FROM ${bankConnections} WHERE ${bankConnections.teamId} = ${teamId}
+      ) OR EXISTS (
+        SELECT 1 FROM ${invoices} WHERE ${invoices.teamId} = ${teamId}
+      )`,
+    })
+    .from(teams)
+    .limit(1);
+
+  return result?.hasData ?? false;
 }

@@ -11,76 +11,120 @@ import {
   upsertCustomer,
 } from "@midday/db/queries";
 import { z } from "zod";
-import { hasScope, READ_ONLY_ANNOTATIONS, type RegisterTools } from "../types";
-
-// Annotations for write operations
-const WRITE_ANNOTATIONS = {
-  readOnlyHint: false,
-  destructiveHint: false,
-  idempotentHint: false,
-  openWorldHint: false,
-} as const;
-
-// Annotations for destructive operations
-const DESTRUCTIVE_ANNOTATIONS = {
-  readOnlyHint: false,
-  destructiveHint: true,
-  idempotentHint: true,
-  openWorldHint: false,
-} as const;
+import {
+  mcpCustomerDetailSchema,
+  mcpCustomerListItemSchema,
+  sanitize,
+  sanitizeArray,
+} from "../schemas";
+import {
+  DESTRUCTIVE_ANNOTATIONS,
+  hasScope,
+  READ_ONLY_ANNOTATIONS,
+  type RegisterTools,
+  WRITE_ANNOTATIONS,
+} from "../types";
+import { truncateListResponse, withErrorHandling } from "../utils";
 
 export const registerCustomerTools: RegisterTools = (server, ctx) => {
   const { db, teamId } = ctx;
 
-  // Check scopes
   const hasReadScope = hasScope(ctx, "customers.read");
   const hasWriteScope = hasScope(ctx, "customers.write");
 
-  // Skip if user has no customer scopes
   if (!hasReadScope && !hasWriteScope) {
     return;
   }
 
-  // ==========================================
-  // READ TOOLS
-  // ==========================================
-
   if (hasReadScope) {
+    const { sort: _sort, ...customersListFields } = getCustomersSchema.shape;
+
     server.registerTool(
       "customers_list",
       {
         title: "List Customers",
         description:
-          "List customers with filtering and search. Use this to find customer information.",
-        inputSchema: getCustomersSchema.shape,
+          "List customers with optional free-text search and sorting. Returns paginated results (default 25) with name, email, contact info, and address. Use cursor from the response to fetch the next page.",
+        inputSchema: {
+          ...customersListFields,
+          sortBy: z
+            .enum([
+              "name",
+              "created_at",
+              "contact",
+              "email",
+              "invoices",
+              "projects",
+              "tags",
+              "industry",
+              "country",
+              "total_revenue",
+              "outstanding",
+              "last_invoice",
+            ])
+            .optional()
+            .describe("Column to sort by"),
+          sortDirection: z
+            .enum(["asc", "desc"])
+            .optional()
+            .describe("Sort direction"),
+        },
+        outputSchema: {
+          meta: z.looseObject({
+            cursor: z.string().nullable().optional(),
+            hasNextPage: z.boolean(),
+            hasPreviousPage: z.boolean(),
+          }),
+          data: z.array(z.record(z.string(), z.any())),
+        },
         annotations: READ_ONLY_ANNOTATIONS,
       },
-      async (params) => {
+      withErrorHandling(async (params) => {
+        const sort = params.sortBy
+          ? [params.sortBy, params.sortDirection ?? "desc"]
+          : null;
+
         const result = await getCustomers(db, {
           teamId,
           cursor: params.cursor ?? null,
           pageSize: params.pageSize ?? 25,
           q: params.q ?? null,
-          sort: params.sort ?? null,
+          sort,
         });
 
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        const response = {
+          meta: {
+            cursor: result.meta.cursor ?? null,
+            hasNextPage: result.meta.hasNextPage,
+            hasPreviousPage: result.meta.hasPreviousPage,
+          },
+          data: sanitizeArray(mcpCustomerListItemSchema, result.data ?? []),
         };
-      },
+
+        const { text, structuredContent } = truncateListResponse(response);
+
+        return {
+          content: [{ type: "text", text }],
+          structuredContent,
+        };
+      }, "Failed to list customers"),
     );
 
     server.registerTool(
       "customers_get",
       {
         title: "Get Customer",
-        description: "Get a specific customer by their ID with full details",
+        description:
+          "Get full customer details by ID including name, email, billing email, phone, website, contact person, full address, VAT number, tags, and notes.",
         inputSchema: {
           id: getCustomerByIdSchema.shape.id,
         },
+        outputSchema: {
+          data: z.record(z.string(), z.any()),
+        },
         annotations: READ_ONLY_ANNOTATIONS,
       },
-      async ({ id }) => {
+      withErrorHandling(async ({ id }) => {
         const result = await getCustomerById(db, { id, teamId });
 
         if (!result) {
@@ -90,16 +134,15 @@ export const registerCustomerTools: RegisterTools = (server, ctx) => {
           };
         }
 
+        const clean = sanitize(mcpCustomerDetailSchema, result);
+
         return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify(clean) }],
+          structuredContent: { data: clean },
         };
-      },
+      }, "Failed to get customer"),
     );
   }
-
-  // ==========================================
-  // WRITE TOOLS
-  // ==========================================
 
   if (hasWriteScope) {
     server.registerTool(
@@ -107,7 +150,7 @@ export const registerCustomerTools: RegisterTools = (server, ctx) => {
       {
         title: "Create Customer",
         description:
-          "Create a new customer with name, email, and optional address/contact details.",
+          "Create a new customer. Name is required; all other fields (email, phone, address, VAT, etc.) are optional. Returns the created customer object.",
         inputSchema: {
           name: upsertCustomerSchema.shape.name,
           email: upsertCustomerSchema.shape.email,
@@ -129,29 +172,47 @@ export const registerCustomerTools: RegisterTools = (server, ctx) => {
         annotations: WRITE_ANNOTATIONS,
       },
       async (params) => {
-        const result = await upsertCustomer(db, {
-          teamId,
-          name: params.name,
-          email: params.email,
-          billingEmail: params.billingEmail,
-          phone: params.phone,
-          website: params.website,
-          contact: params.contact,
-          country: params.country,
-          countryCode: params.countryCode,
-          addressLine1: params.addressLine1,
-          addressLine2: params.addressLine2,
-          city: params.city,
-          state: params.state,
-          zip: params.zip,
-          vatNumber: params.vatNumber,
-          note: params.note,
-          tags: params.tags,
-        });
+        try {
+          const result = await upsertCustomer(db, {
+            teamId,
+            name: params.name,
+            email: params.email,
+            billingEmail: params.billingEmail,
+            phone: params.phone,
+            website: params.website,
+            contact: params.contact,
+            country: params.country,
+            countryCode: params.countryCode,
+            addressLine1: params.addressLine1,
+            addressLine2: params.addressLine2,
+            city: params.city,
+            state: params.state,
+            zip: params.zip,
+            vatNumber: params.vatNumber,
+            note: params.note,
+            tags: params.tags,
+          });
 
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        };
+          const clean = sanitize(mcpCustomerDetailSchema, result);
+
+          return {
+            content: [{ type: "text", text: JSON.stringify(clean) }],
+            structuredContent: { data: clean },
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  error instanceof Error
+                    ? error.message
+                    : "Failed to create customer",
+              },
+            ],
+            isError: true,
+          };
+        }
       },
     );
 
@@ -160,7 +221,7 @@ export const registerCustomerTools: RegisterTools = (server, ctx) => {
       {
         title: "Update Customer",
         description:
-          "Update an existing customer. Provide the customer ID and fields to update.",
+          "Update an existing customer. Provide the customer ID and only the fields you want to change. Unspecified fields keep their current values.",
         inputSchema: {
           id: z.string().uuid().describe("The ID of the customer to update"),
           name: upsertCustomerSchema.shape.name.optional(),
@@ -183,43 +244,60 @@ export const registerCustomerTools: RegisterTools = (server, ctx) => {
         annotations: WRITE_ANNOTATIONS,
       },
       async (params) => {
-        // First check if customer exists
-        const existing = await getCustomerById(db, {
-          id: params.id,
-          teamId,
-        });
+        try {
+          const existing = await getCustomerById(db, {
+            id: params.id,
+            teamId,
+          });
 
-        if (!existing) {
+          if (!existing) {
+            return {
+              content: [{ type: "text", text: "Customer not found" }],
+              isError: true,
+            };
+          }
+
+          const result = await upsertCustomer(db, {
+            id: params.id,
+            teamId,
+            name: params.name ?? existing.name,
+            email: params.email ?? existing.email,
+            billingEmail: params.billingEmail ?? existing.billingEmail,
+            phone: params.phone ?? existing.phone,
+            website: params.website ?? existing.website,
+            contact: params.contact ?? existing.contact,
+            country: params.country ?? existing.country,
+            countryCode: params.countryCode ?? existing.countryCode,
+            addressLine1: params.addressLine1 ?? existing.addressLine1,
+            addressLine2: params.addressLine2 ?? existing.addressLine2,
+            city: params.city ?? existing.city,
+            state: params.state ?? existing.state,
+            zip: params.zip ?? existing.zip,
+            vatNumber: params.vatNumber ?? existing.vatNumber,
+            note: params.note ?? existing.note,
+            tags: params.tags ?? existing.tags,
+          });
+
+          const clean = sanitize(mcpCustomerDetailSchema, result);
+
           return {
-            content: [{ type: "text", text: "Customer not found" }],
+            content: [{ type: "text", text: JSON.stringify(clean) }],
+            structuredContent: { data: clean },
+          };
+        } catch (error) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  error instanceof Error
+                    ? error.message
+                    : "Failed to update customer",
+              },
+            ],
             isError: true,
           };
         }
-
-        const result = await upsertCustomer(db, {
-          id: params.id,
-          teamId,
-          name: params.name ?? existing.name,
-          email: params.email ?? existing.email,
-          billingEmail: params.billingEmail ?? existing.billingEmail,
-          phone: params.phone ?? existing.phone,
-          website: params.website ?? existing.website,
-          contact: params.contact ?? existing.contact,
-          country: params.country ?? existing.country,
-          countryCode: params.countryCode ?? existing.countryCode,
-          addressLine1: params.addressLine1 ?? existing.addressLine1,
-          addressLine2: params.addressLine2 ?? existing.addressLine2,
-          city: params.city ?? existing.city,
-          state: params.state ?? existing.state,
-          zip: params.zip ?? existing.zip,
-          vatNumber: params.vatNumber ?? existing.vatNumber,
-          note: params.note ?? existing.note,
-          tags: params.tags ?? existing.tags,
-        });
-
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        };
       },
     );
 
@@ -228,7 +306,7 @@ export const registerCustomerTools: RegisterTools = (server, ctx) => {
       {
         title: "Delete Customer",
         description:
-          "Delete a customer by their ID. This will fail if the customer has associated invoices or projects.",
+          "Permanently delete a customer by ID. Will fail if the customer has associated invoices or projects — remove those first.",
         inputSchema: {
           id: deleteCustomerSchema.shape.id,
         },
@@ -242,13 +320,10 @@ export const registerCustomerTools: RegisterTools = (server, ctx) => {
             content: [
               {
                 type: "text",
-                text: JSON.stringify(
-                  { success: true, deleted: result },
-                  null,
-                  2,
-                ),
+                text: JSON.stringify({ success: true, deleted: result }),
               },
             ],
+            structuredContent: { success: true, deleted: result },
           };
         } catch (error) {
           return {

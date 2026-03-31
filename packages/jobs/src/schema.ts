@@ -111,6 +111,7 @@ export type UpdateBaseCurrencyPayload = z.infer<
 export const exportTransactionsSchema = z.object({
   teamId: z.string().uuid(),
   userId: z.string().uuid(),
+  userEmail: z.string().email().optional(),
   locale: z.string(),
   dateFormat: z.string().nullable().optional(),
   transactionIds: z.array(z.string().uuid()),
@@ -120,6 +121,7 @@ export const exportTransactionsSchema = z.object({
       includeCSV: z.boolean(),
       includeXLSX: z.boolean(),
       sendEmail: z.boolean(),
+      sendCopyToMe: z.boolean().optional(),
       accountantEmail: z.string().optional(),
     })
     .optional(),
@@ -203,13 +205,6 @@ export const processTransactionAttachmentSchema = z.object({
 export type ProcessTransactionAttachmentPayload = z.infer<
   typeof processTransactionAttachmentSchema
 >;
-
-export const embedTransactionSchema = z.object({
-  transactionIds: z.array(z.string().uuid()),
-  teamId: z.string().uuid(),
-});
-
-export type EmbedTransactionPayload = z.infer<typeof embedTransactionSchema>;
 
 export const scheduleInvoiceJobSchema = z.object({
   invoiceId: z.string().uuid(),

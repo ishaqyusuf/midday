@@ -11,25 +11,29 @@ import {
 import { Badge } from "@midday/ui/badge";
 import { Button } from "@midday/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@midday/ui/card";
-import {
-  Carousel,
-  type CarouselApi,
-  CarouselContent,
-  CarouselItem,
-} from "@midday/ui/carousel";
+import { Icons } from "@midday/ui/icons";
 import { ScrollArea } from "@midday/ui/scroll-area";
 import { Sheet, SheetContent, SheetHeader } from "@midday/ui/sheet";
+import { Skeleton } from "@midday/ui/skeleton";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { useToast } from "@midday/ui/use-toast";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import Image from "next/image";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsBoolean, parseAsString, useQueryStates } from "nuqs";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useAppOAuth } from "@/hooks/use-app-oauth";
 import { useTRPC } from "@/trpc/client";
 import { getScopeDescription } from "@/utils/scopes";
 import { AppSettings } from "./app-settings";
 import { MemoizedReactMarkdown } from "./markdown";
+import {
+  ChatGPTSetupInstructions,
+  ClaudeSetupInstructions,
+  ClineSetupInstructions,
+  GeminiSetupInstructions,
+  ManusSetupInstructions,
+  WindsurfSetupInstructions,
+  ZedSetupInstructions,
+} from "./mcp-setup-instructions";
 
 // OAuth app configuration
 const oauthAppConfig: Record<
@@ -48,66 +52,152 @@ const oauthAppConfig: Record<
   },
 };
 
+function ConnectorDetailContent({ slug }: { slug: string }) {
+  const trpc = useTRPC();
+  const { data, isLoading } = useQuery(
+    trpc.connectors.detail.queryOptions({ slug }),
+  );
+
+  if (isLoading) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-4 w-3/4" />
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+        <div className="space-y-2 mt-4">
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+          <Skeleton className="h-8 w-full" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  return (
+    <Accordion
+      type="multiple"
+      defaultValue={["about", "tools"]}
+      className="mt-4"
+    >
+      <AccordionItem value="about" className="border-none">
+        <AccordionTrigger>About</AccordionTrigger>
+        <AccordionContent className="text-[#878787] text-sm">
+          <p>{data.description}</p>
+
+          <div className="flex flex-wrap gap-1.5 mt-3">
+            {data.categories.map((cat) => (
+              <Badge key={cat.slug} variant="tag">
+                {cat.name}
+              </Badge>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-4 mt-3 text-xs">
+            <span>{data.toolsCount} tools available</span>
+            {data.triggersCount > 0 && (
+              <span>{data.triggersCount} triggers</span>
+            )}
+          </div>
+
+          {data.appUrl && (
+            <a
+              href={data.appUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs mt-3 hover:underline"
+            >
+              Visit website
+              <Icons.ExternalLink className="size-3" />
+            </a>
+          )}
+        </AccordionContent>
+      </AccordionItem>
+
+      {data.tools.length > 0 && (
+        <AccordionItem value="tools" className="border-none">
+          <AccordionTrigger>
+            Available tools ({data.tools.length})
+          </AccordionTrigger>
+          <AccordionContent>
+            <div className="space-y-3">
+              {data.tools.map((tool) => (
+                <div key={tool.slug}>
+                  <div className="flex items-start gap-2">
+                    <div className="size-1.5 rounded-full bg-primary mt-1.5 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">
+                        {tool.name}
+                      </p>
+                      <p className="text-xs text-[#878787] line-clamp-2">
+                        {tool.description}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+      )}
+
+      {data.authSchemes.length > 0 && (
+        <AccordionItem value="auth" className="border-none">
+          <AccordionTrigger>Authentication</AccordionTrigger>
+          <AccordionContent>
+            <div className="flex flex-wrap gap-1.5">
+              {data.authSchemes.map((scheme) => (
+                <Badge key={scheme} variant="tag">
+                  {scheme.replace(/_/g, " ").toUpperCase()}
+                </Badge>
+              ))}
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+      )}
+    </Accordion>
+  );
+}
+
 interface UnifiedAppProps {
   app: UnifiedApp;
   userEmail?: string;
 }
 
-function CarouselWithDots({
-  images,
-  appName,
-}: {
-  images: string[];
-  appName: string;
-}) {
-  const [api, setApi] = useState<CarouselApi>();
-  const [current, setCurrent] = useState(0);
-
-  useEffect(() => {
-    if (!api) {
-      return;
-    }
-
-    setCurrent(api.selectedScrollSnap());
-
-    api.on("select", () => {
-      setCurrent(api.selectedScrollSnap());
-    });
-  }, [api]);
-
+function AppHeroBanner({ app }: { app: UnifiedApp }) {
   return (
-    <div className="relative">
-      <Carousel className="w-full max-w-[465px]" setApi={setApi}>
-        <CarouselContent>
-          {images.map((image: string, index: number) => (
-            <CarouselItem key={`${appName}-${image}-${index.toString()}`}>
-              <Image
-                src={image}
-                alt={`${appName} screenshot ${index + 1}`}
-                width={465}
-                height={290}
-                quality={100}
-              />
-            </CarouselItem>
-          ))}
-        </CarouselContent>
-      </Carousel>
+    <div
+      className="relative w-full flex items-center justify-center overflow-hidden bg-[#fafafa] dark:bg-[#0c0c0c]"
+      style={{ height: 200 }}
+    >
+      <div
+        className="absolute inset-0 dark:hidden"
+        style={{
+          backgroundImage:
+            "radial-gradient(circle, #e0e0e0 1px, transparent 1px)",
+          backgroundSize: "10px 10px",
+        }}
+      />
+      <div
+        className="absolute inset-0 hidden dark:block"
+        style={{
+          backgroundImage: "radial-gradient(circle, #333 1px, transparent 1px)",
+          backgroundSize: "10px 10px",
+        }}
+      />
 
-      {/* Pagination dots */}
-      <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex space-x-2">
-        {images.map((image, index) => (
-          <button
-            key={`dot-${image}-${index.toString()}`}
-            type="button"
-            className={`w-2 h-2 rounded-full transition-all ${
-              index === current
-                ? "bg-white shadow-lg"
-                : "bg-white/50 hover:bg-white/75"
-            }`}
-            onClick={() => api?.scrollTo(index)}
-            aria-label={`Go to screenshot ${index + 1}`}
-          />
-        ))}
+      <div className="relative z-10 app-hero-icon">
+        {app.type === "official" && app.logo && typeof app.logo !== "string" ? (
+          <app.logo />
+        ) : (
+          <img src={app.logo as string} alt={app.name} />
+        )}
+        <style>
+          {
+            ".app-hero-icon img, .app-hero-icon svg { width: 64px !important; height: 64px !important; }"
+          }
+        </style>
       </div>
     </div>
   );
@@ -187,6 +277,20 @@ export function UnifiedAppComponent({ app }: UnifiedAppProps) {
     }),
   );
 
+  const connectorAuthorizeMutation = useMutation(
+    trpc.connectors.authorize.mutationOptions(),
+  );
+
+  const connectorDisconnectMutation = useMutation(
+    trpc.connectors.disconnect.mutationOptions({
+      onSuccess: () => {
+        queryClient.invalidateQueries({
+          queryKey: trpc.connectors.list.queryKey(),
+        });
+      },
+    }),
+  );
+
   // Mutation to disconnect Stripe Payments
   const disconnectStripeMutation = useMutation(
     trpc.invoicePayments.disconnectStripe.mutationOptions({
@@ -204,7 +308,8 @@ export function UnifiedAppComponent({ app }: UnifiedAppProps) {
     disconnectOfficialAppMutation.isPending ||
     revokeExternalAppMutation.isPending ||
     disconnectInboxAccountMutation.isPending ||
-    disconnectStripeMutation.isPending;
+    disconnectStripeMutation.isPending ||
+    connectorDisconnectMutation.isPending;
 
   const handleDisconnect = () => {
     // Gmail and Outlook use inbox_accounts table
@@ -219,6 +324,13 @@ export function UnifiedAppComponent({ app }: UnifiedAppProps) {
       return;
     }
 
+    if (app.type === "connector" && app.connectedAccountId) {
+      connectorDisconnectMutation.mutate({
+        connectedAccountId: app.connectedAccountId,
+      });
+      return;
+    }
+
     if (app.type === "official") {
       disconnectOfficialAppMutation.mutate({ appId: app.id });
     } else {
@@ -230,6 +342,70 @@ export function UnifiedAppComponent({ app }: UnifiedAppProps) {
     setLoading(true);
 
     try {
+      if (app.type === "connector" && app.connectorSlug) {
+        const callbackUrl = `${window.location.origin}/connectors/callback`;
+        const result = await connectorAuthorizeMutation.mutateAsync({
+          toolkit: app.connectorSlug,
+          callbackUrl,
+        });
+
+        const redirectUrl = result.redirectUrl;
+        if (!redirectUrl) {
+          setLoading(false);
+          return;
+        }
+
+        const width = 600;
+        const height = 700;
+        const left = window.screenX + (window.outerWidth - width) / 2;
+        const top = window.screenY + (window.outerHeight - height) / 2.5;
+
+        const popup = window.open(
+          redirectUrl,
+          "composio_auth",
+          `toolbar=no, location=no, directories=no, status=no, menubar=no, scrollbars=no, resizable=no, copyhistory=no, width=${width}, height=${height}, top=${top}, left=${left}`,
+        );
+
+        if (!popup) {
+          window.location.href = redirectUrl;
+          return;
+        }
+
+        const listener = (e: MessageEvent) => {
+          if (e.data === "connector_oauth_completed") {
+            window.removeEventListener("message", listener);
+            queryClient.invalidateQueries({
+              queryKey: trpc.connectors.list.queryKey(),
+            });
+            setLoading(false);
+          }
+        };
+
+        window.addEventListener("message", listener);
+
+        const checkInterval = setInterval(() => {
+          if (popup.closed) {
+            clearInterval(checkInterval);
+            window.removeEventListener("message", listener);
+            queryClient.invalidateQueries({
+              queryKey: trpc.connectors.list.queryKey(),
+            });
+            setLoading(false);
+          }
+        }, 500);
+
+        setTimeout(
+          () => {
+            clearInterval(checkInterval);
+            window.removeEventListener("message", listener);
+            setLoading(false);
+          },
+          5 * 60 * 1000,
+        );
+
+        return;
+      }
+
       // Use OAuth hook for configured apps
       if (oauthConfig) {
         await appOAuth.connect();
@@ -279,6 +455,8 @@ export function UnifiedAppComponent({ app }: UnifiedAppProps) {
       setLoading(false);
     }
   };
+
+  const isMcpApp = app.id.endsWith("-mcp");
 
   return (
     <Card key={app.id} className="w-full flex flex-col">
@@ -332,201 +510,205 @@ export function UnifiedAppComponent({ app }: UnifiedAppProps) {
             Details
           </Button>
 
-          {app.installUrl ? (
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={handleOnInitialize}
-              disabled={!app.active}
-            >
-              {app.id === "midday-desktop" ? "Download" : "Install"}
-            </Button>
-          ) : app.installed ? (
-            <SubmitButton
-              variant="outline"
-              className="w-full"
-              onClick={handleDisconnect}
-              isSubmitting={isDisconnecting}
-            >
-              Disconnect
-            </SubmitButton>
-          ) : (
-            <SubmitButton
-              variant="outline"
-              className="w-full"
-              onClick={handleOnInitialize}
-              disabled={!app.active}
-              isSubmitting={isInstalling}
-            >
-              Install
-            </SubmitButton>
-          )}
+          {!isMcpApp &&
+            (app.installUrl ? (
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={handleOnInitialize}
+                disabled={!app.active}
+              >
+                {app.id === "midday-desktop" ? "Download" : "Install"}
+              </Button>
+            ) : app.installed ? (
+              <SubmitButton
+                variant="outline"
+                className="w-full"
+                onClick={handleDisconnect}
+                isSubmitting={isDisconnecting}
+              >
+                Disconnect
+              </SubmitButton>
+            ) : (
+              <SubmitButton
+                variant="outline"
+                className="w-full"
+                onClick={handleOnInitialize}
+                disabled={!app.active}
+                isSubmitting={isInstalling}
+              >
+                Install
+              </SubmitButton>
+            ))}
         </div>
 
         <SheetContent>
-          <SheetHeader>
-            {app.images.length > 0 && (
-              <div className="mb-4">
-                {app.images.length === 1 ? (
-                  <Image
-                    src={app.images[0] as string}
-                    alt={app.name}
-                    width={465}
-                    height={290}
-                    quality={100}
-                  />
-                ) : (
-                  <CarouselWithDots images={app.images} appName={app.name} />
-                )}
-              </div>
-            )}
-
-            <div className="flex items-center justify-between border-b border-border pb-2">
-              <div className="flex items-center space-x-2">
-                {app.type === "official" &&
-                app.logo &&
-                typeof app.logo !== "string" ? (
-                  <app.logo />
-                ) : (
-                  <img
-                    src={app.logo as string}
-                    alt={app.name}
-                    className="w-8 h-8 rounded"
-                  />
-                )}
-                <div>
-                  <div className="flex items-center space-x-2">
-                    <h3 className="text-lg leading-none">{app.name}</h3>
-                    {app.installed && (
-                      <div className="bg-green-600 text-[9px] dark:bg-green-300 rounded-full size-1" />
-                    )}
-                  </div>
-
-                  <span className="text-xs text-[#878787]">
-                    {app.category} •{" "}
-                    {app.type === "external"
-                      ? `By ${app.developerName}`
-                      : "By Midday"}
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                {app.installed ? (
-                  <SubmitButton
-                    variant="outline"
-                    className="w-full"
-                    onClick={handleDisconnect}
-                    isSubmitting={isDisconnecting}
-                  >
-                    Disconnect
-                  </SubmitButton>
-                ) : (
-                  <SubmitButton
-                    variant="outline"
-                    className="w-full border-primary"
-                    onClick={handleOnInitialize}
-                    disabled={!app.active}
-                    isSubmitting={isInstalling}
-                  >
-                    {app.id === "midday-desktop" ? "Download" : "Install"}
-                  </SubmitButton>
-                )}
-              </div>
+          <SheetHeader className="h-full overflow-hidden">
+            <div className="mb-4 shrink-0">
+              <AppHeroBanner app={app} />
             </div>
 
-            <div className="mt-4">
-              <ScrollArea className="h-[calc(100vh-530px)] pt-2" hideScrollbar>
-                <Accordion
-                  type="multiple"
-                  defaultValue={[
-                    "description",
-                    ...(params.settings ? ["settings"] : []),
-                  ]}
-                  className="mt-4"
-                >
-                  <AccordionItem value="description" className="border-none">
-                    <AccordionTrigger>How it works</AccordionTrigger>
-                    <AccordionContent className="text-[#878787] text-sm prose prose-sm prose-invert prose-p:text-[#878787] prose-p:my-3 [&_strong]:text-primary [&_strong]:font-normal max-w-none">
-                      <MemoizedReactMarkdown>
-                        {app.description || app.overview || ""}
-                      </MemoizedReactMarkdown>
-                    </AccordionContent>
-                  </AccordionItem>
-
-                  {app.type === "official" &&
-                    app.settings &&
-                    app.settings.length > 0 && (
-                      <AccordionItem value="settings" className="border-none">
-                        <AccordionTrigger>Settings</AccordionTrigger>
-                        <AccordionContent className="text-[#878787] text-sm">
-                          <AppSettings
-                            appId={app.id}
-                            settings={app.settings.map((setting) => {
-                              // Find the user setting for this setting ID
-                              const userSetting = Array.isArray(
-                                app.userSettings,
-                              )
-                                ? app.userSettings.find(
-                                    (us: any) => us.id === setting.id,
-                                  )
-                                : null;
-
-                              return {
-                                ...setting,
-                                type: setting.type as
-                                  | "switch"
-                                  | "text"
-                                  | "select",
-                                value: userSetting?.value ?? setting.value,
-                              };
-                            })}
-                          />
-                        </AccordionContent>
-                      </AccordionItem>
-                    )}
-
-                  {app.type === "external" && (
-                    <>
-                      {app.website && (
-                        <AccordionItem value="website" className="border-none">
-                          <AccordionTrigger>Website</AccordionTrigger>
-                          <AccordionContent>
-                            <a
-                              href={app.website}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-sm hover:underline text-[#878787]"
-                            >
-                              {app.website}
-                            </a>
-                          </AccordionContent>
-                        </AccordionItem>
-                      )}
-
-                      {app.scopes && app.scopes.length > 0 && (
-                        <AccordionItem
-                          value="permissions"
-                          className="border-none"
-                        >
-                          <AccordionTrigger>Permissions</AccordionTrigger>
-                          <AccordionContent>
-                            <div className="flex flex-wrap gap-2">
-                              {app.scopes.map((scope) => (
-                                <Badge key={scope} variant="tag">
-                                  {getScopeDescription(scope).label}
-                                </Badge>
-                              ))}
-                            </div>
-                          </AccordionContent>
-                        </AccordionItem>
-                      )}
-                    </>
+            <div className="flex items-center justify-between border-b border-border pb-2 shrink-0">
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-lg leading-none">{app.name}</h3>
+                  {app.installed && (
+                    <div className="bg-green-600 text-[9px] dark:bg-green-300 rounded-full size-1" />
                   )}
-                </Accordion>
+                </div>
+
+                <span className="text-xs text-[#878787]">
+                  {app.category} •{" "}
+                  {app.type === "connector"
+                    ? "Connected app"
+                    : app.type === "external"
+                      ? `By ${app.developerName}`
+                      : "By Midday"}
+                </span>
+              </div>
+
+              {!isMcpApp && (
+                <div>
+                  {app.installed ? (
+                    <SubmitButton
+                      variant="outline"
+                      className="w-full"
+                      onClick={handleDisconnect}
+                      isSubmitting={isDisconnecting}
+                    >
+                      Disconnect
+                    </SubmitButton>
+                  ) : (
+                    <SubmitButton
+                      variant="outline"
+                      className="w-full border-primary"
+                      onClick={handleOnInitialize}
+                      disabled={!app.active}
+                      isSubmitting={isInstalling}
+                    >
+                      {app.id === "midday-desktop" ? "Download" : "Install"}
+                    </SubmitButton>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 flex-1 min-h-0 flex flex-col">
+              <ScrollArea className="flex-1 h-0" hideScrollbar>
+                {app.type === "connector" && app.connectorSlug ? (
+                  <ConnectorDetailContent slug={app.connectorSlug} />
+                ) : (
+                  <Accordion
+                    type="multiple"
+                    defaultValue={[
+                      "description",
+                      ...(params.settings ? ["settings"] : []),
+                    ]}
+                    className="mt-4"
+                  >
+                    <AccordionItem value="description" className="border-none">
+                      <AccordionTrigger>How it works</AccordionTrigger>
+                      <AccordionContent className="text-[#878787] text-sm">
+                        {app.id === "chatgpt-mcp" ? (
+                          <ChatGPTSetupInstructions />
+                        ) : app.id === "claude-mcp" ? (
+                          <ClaudeSetupInstructions />
+                        ) : app.id === "gemini-mcp" ? (
+                          <GeminiSetupInstructions />
+                        ) : app.id === "windsurf-mcp" ? (
+                          <WindsurfSetupInstructions />
+                        ) : app.id === "cline-mcp" ? (
+                          <ClineSetupInstructions />
+                        ) : app.id === "zed-mcp" ? (
+                          <ZedSetupInstructions />
+                        ) : app.id === "manus-mcp" ? (
+                          <ManusSetupInstructions />
+                        ) : (
+                          <div className="prose prose-sm prose-invert prose-p:text-[#878787] prose-p:my-3 [&_strong]:text-primary [&_strong]:font-normal max-w-none">
+                            <MemoizedReactMarkdown>
+                              {app.description || app.overview || ""}
+                            </MemoizedReactMarkdown>
+                          </div>
+                        )}
+                      </AccordionContent>
+                    </AccordionItem>
+
+                    {app.type === "official" &&
+                      app.settings &&
+                      app.settings.length > 0 && (
+                        <AccordionItem value="settings" className="border-none">
+                          <AccordionTrigger>Settings</AccordionTrigger>
+                          <AccordionContent className="text-[#878787] text-sm">
+                            <AppSettings
+                              appId={app.id}
+                              settings={app.settings.map((setting) => {
+                                const userSetting = Array.isArray(
+                                  app.userSettings,
+                                )
+                                  ? app.userSettings.find(
+                                      (us: any) => us.id === setting.id,
+                                    )
+                                  : null;
+
+                                return {
+                                  ...setting,
+                                  type: setting.type as
+                                    | "switch"
+                                    | "text"
+                                    | "select",
+                                  value: userSetting?.value ?? setting.value,
+                                };
+                              })}
+                            />
+                          </AccordionContent>
+                        </AccordionItem>
+                      )}
+
+                    {app.type === "external" && (
+                      <>
+                        {app.website && (
+                          <AccordionItem
+                            value="website"
+                            className="border-none"
+                          >
+                            <AccordionTrigger>Website</AccordionTrigger>
+                            <AccordionContent>
+                              <a
+                                href={app.website}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-sm hover:underline text-[#878787]"
+                              >
+                                {app.website}
+                              </a>
+                            </AccordionContent>
+                          </AccordionItem>
+                        )}
+
+                        {app.scopes && app.scopes.length > 0 && (
+                          <AccordionItem
+                            value="permissions"
+                            className="border-none"
+                          >
+                            <AccordionTrigger>Permissions</AccordionTrigger>
+                            <AccordionContent>
+                              <div className="flex flex-wrap gap-2">
+                                {app.scopes.map((scope) => (
+                                  <Badge key={scope} variant="tag">
+                                    {getScopeDescription(scope).label}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </AccordionContent>
+                          </AccordionItem>
+                        )}
+                      </>
+                    )}
+                  </Accordion>
+                )}
               </ScrollArea>
 
-              <div className="absolute bottom-4 pt-8 border-t border-border">
+              <div className="shrink-0 pt-4 border-t border-border">
                 <p className="text-[10px] text-[#878787]">
                   All apps on the Midday App Store are open-source and
                   peer-reviewed. Midday Labs AB maintains high standards but

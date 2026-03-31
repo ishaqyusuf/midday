@@ -22,6 +22,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  lt,
   lte,
   or,
   sql,
@@ -32,7 +33,6 @@ import type { Database, DatabaseOrTransaction } from "../client";
 import {
   type activityTypeEnum,
   customers,
-  exchangeRates,
   invoiceRecurring,
   invoiceStatusEnum,
   invoices,
@@ -43,6 +43,7 @@ import {
   users,
 } from "../schema";
 import { logActivity } from "../utils/log-activity";
+import { getExchangeRatesBatch } from "./exhange-rates";
 
 export type Template = {
   id?: string; // Reference to invoice_templates table
@@ -179,7 +180,9 @@ export async function getInvoices(db: Database, params: GetInvoicesParams) {
     }
   }
 
-  // Start building the query
+  // Start building the query – excludes heavy JSONB blobs not needed for
+  // list views (paymentDetails, customerDetails, noteDetails, fromDetails,
+  // topBlock, bottomBlock). Use getInvoiceById for full data.
   const query = db
     .select({
       id: invoices.id,
@@ -189,8 +192,6 @@ export async function getInvoices(db: Database, params: GetInvoicesParams) {
       amount: invoices.amount,
       currency: invoices.currency,
       lineItems: invoices.lineItems,
-      paymentDetails: invoices.paymentDetails,
-      customerDetails: invoices.customerDetails,
       reminderSentAt: invoices.reminderSentAt,
       updatedAt: invoices.updatedAt,
       note: invoices.note,
@@ -202,18 +203,14 @@ export async function getInvoices(db: Database, params: GetInvoicesParams) {
       status: invoices.status,
       fileSize: invoices.fileSize,
       viewedAt: invoices.viewedAt,
-      fromDetails: invoices.fromDetails,
       issueDate: invoices.issueDate,
       sentAt: invoices.sentAt,
       template: invoices.template,
-      noteDetails: invoices.noteDetails,
       customerName: invoices.customerName,
       token: invoices.token,
       sentTo: invoices.sentTo,
       discount: invoices.discount,
       subtotal: invoices.subtotal,
-      topBlock: invoices.topBlock,
-      bottomBlock: invoices.bottomBlock,
       scheduledAt: invoices.scheduledAt,
       scheduledJobId: invoices.scheduledJobId,
       customer: {
@@ -274,6 +271,14 @@ export async function getInvoices(db: Database, params: GetInvoicesParams) {
       isAscending
         ? query.orderBy(asc(invoices.status))
         : query.orderBy(desc(invoices.status));
+    } else if (column === "invoice_number") {
+      isAscending
+        ? query.orderBy(asc(invoices.invoiceNumber))
+        : query.orderBy(desc(invoices.invoiceNumber));
+    } else if (column === "issue_date") {
+      isAscending
+        ? query.orderBy(asc(invoices.issueDate))
+        : query.orderBy(desc(invoices.issueDate));
     }
   } else {
     // Default sort by created_at descending
@@ -476,11 +481,6 @@ export async function getInvoiceByPaymentIntentId(
 type PaymentStatusResult = {
   score: number;
   paymentStatus: string;
-};
-
-type DbPaymentStatusResult = {
-  score: number;
-  payment_status: string;
 };
 
 export async function getPaymentStatus(
@@ -723,6 +723,7 @@ type DraftInvoiceLineItemParams = {
   price?: number;
   vat?: number | null;
   tax?: number | null;
+  taxRate?: number | null;
 };
 
 type DraftInvoiceTemplateParams = {
@@ -836,6 +837,12 @@ export async function draftInvoice(
         token: useToken,
         templateId,
         ...restInput,
+        // Revert overdue to unpaid when due date is moved to the future
+        status: sql`CASE
+          WHEN ${invoices.status} = 'overdue' AND ${restInput.dueDate}::timestamp >= now()
+          THEN 'unpaid'
+          ELSE ${invoices.status}
+        END`,
         currency: template.currency?.toUpperCase(),
         template: camelcaseKeys(restTemplate, { deep: true }),
         paymentDetails: paymentDetails,
@@ -869,30 +876,30 @@ export async function getInvoiceSummary(
 
   const whereConditions: SQL[] = [eq(invoices.teamId, teamId)];
 
-  // Handle multiple statuses
   if (statuses && statuses.length > 0) {
     whereConditions.push(inArray(invoices.status, statuses));
   }
 
-  // Get team's base currency
-  const [team] = await db
-    .select({ baseCurrency: teams.baseCurrency })
-    .from(teams)
-    .where(eq(teams.id, teamId))
-    .limit(1);
+  const [[team], currencyTotals] = await Promise.all([
+    db
+      .select({ baseCurrency: teams.baseCurrency })
+      .from(teams)
+      .where(eq(teams.id, teamId))
+      .limit(1),
+    db
+      .select({
+        currency: invoices.currency,
+        totalAmount: sql<string>`COALESCE(SUM(${invoices.amount}), 0)`,
+        invoiceCount: count(),
+      })
+      .from(invoices)
+      .where(and(...whereConditions))
+      .groupBy(invoices.currency),
+  ]);
 
   const baseCurrency = team?.baseCurrency || "USD";
 
-  // Get all invoices with their amounts and currencies
-  const invoiceData = await db
-    .select({
-      amount: invoices.amount,
-      currency: invoices.currency,
-    })
-    .from(invoices)
-    .where(and(...whereConditions));
-
-  if (invoiceData.length === 0) {
+  if (currencyTotals.length === 0) {
     return {
       totalAmount: 0,
       invoiceCount: 0,
@@ -900,84 +907,70 @@ export async function getInvoiceSummary(
     };
   }
 
-  // Convert all amounts to base currency and track currency breakdown
-  let totalAmount = 0;
-  const currencyBreakdown = new Map<
-    string,
-    { amount: number; count: number; convertedAmount: number }
-  >();
+  const foreignCurrencies = currencyTotals
+    .map((row) => row.currency || baseCurrency)
+    .filter((c) => c !== baseCurrency);
 
-  for (const invoice of invoiceData) {
-    const amount = Number(invoice.amount) || 0;
-    const currency = invoice.currency || baseCurrency;
-
-    if (currency === baseCurrency) {
-      totalAmount += amount;
-      const existing = currencyBreakdown.get(currency) || {
-        amount: 0,
-        count: 0,
-        convertedAmount: 0,
-      };
-      currencyBreakdown.set(currency, {
-        amount: existing.amount + amount,
-        count: existing.count + 1,
-        convertedAmount: existing.convertedAmount + amount,
-      });
-    } else {
-      // Get exchange rate for this currency to base currency
-      const [exchangeRate] = await db
-        .select({ rate: exchangeRates.rate })
-        .from(exchangeRates)
-        .where(
-          and(
-            eq(exchangeRates.base, currency),
-            eq(exchangeRates.target, baseCurrency),
-          ),
-        )
-        .limit(1);
-
-      if (exchangeRate?.rate) {
-        const convertedAmount = amount * Number(exchangeRate.rate);
-        totalAmount += convertedAmount;
-
-        const existing = currencyBreakdown.get(currency) || {
-          amount: 0,
-          count: 0,
-          convertedAmount: 0,
-        };
-        currencyBreakdown.set(currency, {
-          amount: existing.amount + amount,
-          count: existing.count + 1,
-          convertedAmount: existing.convertedAmount + convertedAmount,
-        });
-      }
-      // Skip invoices with missing exchange rates to avoid mixing currencies
-      // This prevents silently producing incorrect totals
+  const rateMap = new Map<string, number>();
+  if (foreignCurrencies.length > 0) {
+    const pairs = foreignCurrencies.map((c) => ({
+      base: c,
+      target: baseCurrency,
+    }));
+    const batchRates = await getExchangeRatesBatch(db, { pairs });
+    for (const [key, rate] of batchRates) {
+      const base = key.split(":")[0];
+      if (base) rateMap.set(base, rate);
     }
   }
 
-  // Convert breakdown to array and sort by amount (descending)
-  const breakdown = Array.from(currencyBreakdown.entries())
-    .map(([currency, data]) => ({
-      currency,
-      originalAmount: Math.round(data.amount * 100) / 100,
-      convertedAmount: Math.round(data.convertedAmount * 100) / 100,
-      count: data.count,
-    }))
-    .sort((a, b) => b.originalAmount - a.originalAmount);
+  let totalAmount = 0;
+  let invoiceCount = 0;
+  const breakdown: Array<{
+    currency: string;
+    originalAmount: number;
+    convertedAmount: number;
+    count: number;
+  }> = [];
 
-  // Count only invoices that were successfully included in the calculation
-  // (i.e., invoices with valid exchange rates or in base currency)
-  const invoiceCount = Array.from(currencyBreakdown.values()).reduce(
-    (sum, data) => sum + data.count,
-    0,
-  );
+  for (const row of currencyTotals) {
+    const currency = row.currency || baseCurrency;
+    const amount = Number(row.totalAmount) || 0;
+    const rowCount = Number(row.invoiceCount) || 0;
+
+    if (currency === baseCurrency) {
+      totalAmount += amount;
+      breakdown.push({
+        currency,
+        originalAmount: Math.round(amount * 100) / 100,
+        convertedAmount: Math.round(amount * 100) / 100,
+        count: rowCount,
+      });
+      invoiceCount += rowCount;
+    } else {
+      const rate = rateMap.get(currency);
+      if (rate) {
+        const convertedAmount = amount * rate;
+        totalAmount += convertedAmount;
+        breakdown.push({
+          currency,
+          originalAmount: Math.round(amount * 100) / 100,
+          convertedAmount: Math.round(convertedAmount * 100) / 100,
+          count: rowCount,
+        });
+        invoiceCount += rowCount;
+      }
+      // Skip currencies with missing exchange rates to avoid mixing currencies
+    }
+  }
+
+  breakdown.sort((a, b) => b.originalAmount - a.originalAmount);
 
   return {
-    totalAmount: Math.round(totalAmount * 100) / 100, // Round to 2 decimal places
+    totalAmount: Math.round(totalAmount * 100) / 100,
     invoiceCount,
     currency: baseCurrency,
-    breakdown: breakdown.length > 1 ? breakdown : undefined, // Only include if multiple currencies
+    breakdown: breakdown.length > 1 ? breakdown : undefined,
   };
 }
 
@@ -1257,7 +1250,12 @@ export async function getInactiveClientsCount(
             ),
           ),
         )
-        .where(eq(customers.teamId, teamId))
+        .where(
+          and(
+            eq(customers.teamId, teamId),
+            lt(customers.createdAt, thirtyDaysAgo.toISOString()),
+          ),
+        )
         .groupBy(customers.id)
         .having(
           sql`COUNT(DISTINCT ${invoices.id}) = 0 AND COALESCE(SUM(${trackerEntries.duration}), 0) = 0`,

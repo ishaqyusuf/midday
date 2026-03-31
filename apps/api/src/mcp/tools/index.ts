@@ -1,8 +1,11 @@
 export { registerBankAccountTools } from "./bank-accounts";
+export { registerCategoryTools } from "./categories";
 export { registerCustomerTools } from "./customers";
 export { registerDocumentTools } from "./documents";
 export { registerInboxTools } from "./inbox";
-export { registerInsightTools } from "./insights";
+export { registerInvoiceProductTools } from "./invoice-products";
+export { registerInvoiceRecurringTools } from "./invoice-recurring";
+export { registerInvoiceTemplateTools } from "./invoice-templates";
 export { registerInvoiceTools } from "./invoices";
 export { registerReportTools } from "./reports";
 export { registerSearchTools } from "./search";
