@@ -95,16 +95,33 @@ if (DB_POOL_EVENT_LOGGING) {
   });
 }
 
-const workerDb = drizzle(workerPool, {
+const workerDrizzle = drizzle(workerPool, {
   schema,
   casing: "snake_case",
+});
+
+// Shared query helpers call `db.executeOnReplica(...)`. Workers don't use
+// replicas, so route those reads through the primary pool via the normal
+// drizzle `execute` and return the rows in the same shape replicas.ts does.
+const workerDb = Object.assign(workerDrizzle, {
+  executeOnReplica: async <
+    TRow extends Record<string, unknown> = Record<string, unknown>,
+  >(
+    query: Parameters<typeof workerDrizzle.execute>[0],
+  ): Promise<TRow[]> => {
+    const result = await workerDrizzle.execute(query);
+    if (Array.isArray(result)) {
+      return result as TRow[];
+    }
+    return (result as { rows: TRow[] }).rows;
+  },
 });
 
 /**
  * Get the shared worker database instance
  */
 export const getWorkerDb = (): Database => {
-  return workerDb as Database;
+  return workerDb as unknown as Database;
 };
 
 export const getWorkerPoolStats = () => {

@@ -1,4 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  setSystemTime,
+  test,
+} from "bun:test";
 import type { Database } from "../client";
 import {
   createReport,
@@ -23,6 +30,7 @@ import {
   getTaxSummary,
 } from "../queries/reports";
 import {
+  SEED_REFERENCE_DATE,
   seedAll,
   TEAM_EUR_ID,
   TEAM_USD_ID,
@@ -1236,10 +1244,18 @@ describe.skipIf(SKIP)("E2E Calculation Tests", () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // getRunway — bank balances, burn rate averaging
+  // getRunway — bank balances, median burn rate
   // ─────────────────────────────────────────────────────────────────────────
 
   describe("Runway", () => {
+    beforeAll(() => {
+      setSystemTime(SEED_REFERENCE_DATE);
+    });
+
+    afterAll(() => {
+      setSystemTime();
+    });
+
     test("returns positive runway with recent burn data and bank balances", async () => {
       const result = await getRunway(db, {
         teamId: TEAM_USD_ID,
@@ -1247,11 +1263,13 @@ describe.skipIf(SKIP)("E2E Calculation Tests", () => {
       });
 
       // Cash: Checking(50000) + Savings(25000) + EUR(baseBalance=11000) = 86000
-      // Burn: RW1(3000) + RW2(1000) + RW3(2000) + RW4(1500) + RW5(500) = 8000 over 6 months
-      // Avg burn = Math.round(8000/6) = 1333
-      // Runway = Math.round(86000/1333) = 65
-      expect(result).toBeGreaterThan(0);
-      expect(result).toBe(Math.round(86000 / Math.round(8000 / 6)));
+      // Burn (last 3 completed months, seed dates relative to today):
+      //   RW3(2000, month-3) + RW4(1500, month-2) + RW5(500, month-1)
+      // Median of [500, 1500, 2000] = 1500
+      // Runway = Math.round(86000/1500) = 57
+      expect(result.months).toBeGreaterThan(0);
+      expect(result.months).toBe(Math.round(86000 / 1500));
+      expect(result.medianBurn).toBe(1500);
     });
 
     test("team with no bank accounts returns 0", async () => {
@@ -1260,7 +1278,8 @@ describe.skipIf(SKIP)("E2E Calculation Tests", () => {
         currency: "EUR",
       });
 
-      expect(result).toBe(0);
+      expect(result.months).toBe(0);
+      expect(result.medianBurn).toBe(0);
     });
   });
 
@@ -2007,8 +2026,8 @@ describe.skipIf(SKIP)("E2E Calculation Tests", () => {
         currency: "USD",
       });
 
-      // Software has 36-month useful life. E2 is Jan 2024, E5 is Mar 2024, RW2 is Nov 2025.
-      // All are 4+ months old → depreciation > 0
+      // Software has 36-month useful life. E2 is Jan 2024, E5 is Mar 2024, RW2 is recent.
+      // All are 1+ months old → depreciation > 0
       expect(result.assets.nonCurrent.accumulatedDepreciation).toBeGreaterThan(
         0,
       );
@@ -2028,7 +2047,7 @@ describe.skipIf(SKIP)("E2E Calculation Tests", () => {
       // Only Jan + Feb transactions should be included
       // Cash is from bank accounts (not filtered by date), so same
       expect(result.assets.current.cash).toBe(86000);
-      // But software assets should only have E2(200) from Jan, not E5(500) from Mar or RW2(1000) from Nov 2025
+      // But software assets should only have E2(200) from Jan, not E5(500) from Mar or RW2(1000) from recent months
       expect(result.assets.nonCurrent.softwareTechnology).toBe(200);
     });
   });
@@ -2490,15 +2509,24 @@ describe.skipIf(SKIP)("E2E Calculation Tests", () => {
   // Runway — Zero Burn Rate
   // ─────────────────────────────────────────────────────────────────────────
   describe("Runway — Edge Cases", () => {
+    beforeAll(() => {
+      setSystemTime(SEED_REFERENCE_DATE);
+    });
+
+    afterAll(() => {
+      setSystemTime();
+    });
+
     test("team with no expenses in trailing window returns 0 runway", async () => {
-      // TEAM_EUR has only Jan 2024 transactions, so 6-month trailing
-      // window (current month) should have 0 burn
+      // TEAM_EUR has only Jan 2024 transactions, so trailing 3 completed
+      // months should have 0 burn
       const result = await getRunway(db, {
         teamId: TEAM_EUR_ID,
         currency: "EUR",
       });
 
-      expect(result).toBe(0);
+      expect(result.months).toBe(0);
+      expect(result.medianBurn).toBe(0);
     });
   });
 
